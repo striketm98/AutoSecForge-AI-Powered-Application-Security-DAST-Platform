@@ -10,9 +10,11 @@ services:
       DB_NAME: security_dashboard
       DB_USER: dashboard
       DB_PASSWORD: dashboard123
-      APP_NAME: "cyber-Security"
+      APP_NAME: "AutoSecForge Pro"
     depends_on:
       - db
+      - mcp-hackstrike
+      - openai-free-agents
     volumes:
       - ./:/var/www/html
 
@@ -100,6 +102,24 @@ services:
     volumes:
       - oasm_data:/workspace
     entrypoint: ["python", "-m", "oasm_api"]
+
+  mcp-hackstrike:
+    build:
+      context: ./tools/mcp-hackstrike
+    container_name: autosecforge-mcp-hackstrike
+    ports:
+      - "6300:6300"
+    entrypoint: ["python", "-m", "mcp_hackstrike_api"]
+
+  openai-free-agents:
+    build:
+      context: ./tools/openai-free-agents
+    container_name: autosecforge-openai-free-agents
+    ports:
+      - "6400:6400"
+    environment:
+      OPENAI_COMPAT_MODEL: autosecforge-free-agents
+    entrypoint: ["python", "-m", "openai_free_agents_api"]
 
 volumes:
   db_data:

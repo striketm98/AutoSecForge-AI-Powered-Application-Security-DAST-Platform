@@ -10,6 +10,7 @@ $pdo = Database::pdo();
 if ($pdo) {
     $project = $pdo->query('SELECT * FROM projects ORDER BY id DESC LIMIT 1')->fetch() ?: null;
     if ($project) {
+        ensureProRuntimeSchema($pdo, (int) $project['id']);
         $scanStmt = $pdo->prepare('SELECT * FROM scan_runs WHERE project_id = ? ORDER BY created_at DESC');
         $scanStmt->execute([$project['id']]);
         $scanRuns = $scanStmt->fetchAll();
@@ -177,6 +178,8 @@ foreach ($integrations as $integration) {
               </label>
               <div class="scan-launch-actions">
                 <button class="button" type="submit" name="scan_kind" value="suite">Run AppSec Suite</button>
+                <button class="button ghost" type="submit" name="scan_kind" value="mcp">Plan MCP Route</button>
+                <button class="button ghost" type="submit" name="scan_kind" value="agent">Ask Agents</button>
                 <button class="button" type="submit" name="scan_kind" value="sast">Run SAST</button>
                 <button class="button ghost" type="submit" name="scan_kind" value="sca">Run SCA</button>
                 <button class="button ghost" type="submit" name="scan_kind" value="dast">Run DAST</button>
@@ -228,6 +231,33 @@ foreach ($integrations as $integration) {
           <?php $oasmHealth = toolHealth((string) ($oasmService['endpoint_url'] ?? '')); ?>
           <strong class="metric-value"><?= e($oasmHealth['label']) ?></strong>
           <span class="muted"><?= e((string) $oasmHealth['detail']) ?></span>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-header">
+            <h3>MCP HackStrike + OpenAI Free Agents</h3>
+            <span class="muted">Local connector fabric and OpenAI-compatible triage agents</span>
+          </div>
+          <div class="ops-grid">
+            <div>
+              <strong>MCP fabric</strong>
+              <span>Routes SAST, DAST, SCA, container, and Open ASM jobs through JSON-RPC connectors.</span>
+              <div class="finding-badges">
+                <?php foreach (mcpFabricConnectors() as $connector): ?>
+                  <span class="tag"><?= e($connector['type'] . ': ' . $connector['name']) ?></span>
+                <?php endforeach; ?>
+              </div>
+            </div>
+            <div>
+              <strong>Free agents</strong>
+              <span>Uses the local OpenAI-compatible endpoint for report-safe triage and remediation drafting.</span>
+              <div class="finding-badges">
+                <?php foreach (agentRoster() as $agent): ?>
+                  <span class="tag"><?= e($agent['name']) ?></span>
+                <?php endforeach; ?>
+              </div>
+            </div>
+          </div>
         </article>
 
         <article class="panel wide">

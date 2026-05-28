@@ -284,6 +284,27 @@ function pentestPlaybook(): array
     ];
 }
 
+function agentRoster(): array
+{
+    return [
+        ['name' => 'Triage Agent', 'scope' => 'SAST + DAST + SCA', 'task' => 'Ranks findings, maps CWE, and flags false-positive candidates.'],
+        ['name' => 'Remediation Agent', 'scope' => 'Backend + frontend fixes', 'task' => 'Drafts safe remediation notes and retest criteria.'],
+        ['name' => 'Report Agent', 'scope' => 'Pro deliverables', 'task' => 'Builds executive, technical, SARIF, CSV, and client-ready summaries.'],
+    ];
+}
+
+function mcpFabricConnectors(): array
+{
+    return [
+        ['name' => 'SonarQube MCP', 'type' => 'SAST', 'status' => 'ready'],
+        ['name' => 'Semgrep MCP', 'type' => 'SAST', 'status' => 'available'],
+        ['name' => 'OWASP ZAP MCP', 'type' => 'DAST', 'status' => 'ready'],
+        ['name' => 'Trivy MCP', 'type' => 'Container', 'status' => 'available'],
+        ['name' => 'Dependency-Check MCP', 'type' => 'SCA', 'status' => 'ready'],
+        ['name' => 'Open ASM MCP', 'type' => 'OASM', 'status' => 'ready'],
+    ];
+}
+
 function pentestChecklist(): array
 {
     return [
@@ -334,6 +355,68 @@ function toolHealth(string $endpointUrl): array
     return ['status' => 'partial', 'label' => 'Partial', 'detail' => $healthUrl];
 }
 
+function ensureProRuntimeSchema(PDO $pdo, ?int $projectId = null): void
+{
+    try {
+        $pdo->exec("ALTER TABLE scan_jobs MODIFY scan_kind ENUM('sast','sca','dast','mobile','mcp','agent') NOT NULL");
+    } catch (Throwable $e) {
+        // Older demo databases may not be writable during startup; keep the UI usable.
+    }
+
+    if (!$projectId) {
+        try {
+            $projectId = (int) ($pdo->query('SELECT id FROM projects ORDER BY id DESC LIMIT 1')->fetchColumn() ?: 0);
+        } catch (Throwable $e) {
+            $projectId = 0;
+        }
+    }
+
+    if ($projectId <= 0) {
+        return;
+    }
+
+    $integrations = [
+        ['MCP HackStrike Fabric', 'AutoSecForge', 'mcp-hackstrike', 'automation', 'automation', 'api', 'ready', 'http://mcp-hackstrike:6300', 'http://mcp-hackstrike:6300', '/rpc', '/connectors', 'none', 'Local JSON-RPC connector fabric for SAST, DAST, SCA, container, and OASM routing.'],
+        ['OpenAI Free Agents', 'AutoSecForge', 'openai-free-agents', 'assistant', 'assistant', 'api', 'ready', 'http://openai-free-agents:6400', 'http://openai-free-agents:6400', '/v1/chat/completions', '/agents', 'none', 'OpenAI-compatible local agent endpoint for triage, remediation, and client report drafting.'],
+    ];
+
+    try {
+        $stmt = $pdo->prepare('
+            INSERT INTO integrations (
+                project_id, name, vendor_name, integration_profile, type, tool_category,
+                connection_type, status, endpoint_url, api_base_url, scan_submit_url,
+                result_url, auth_type, description
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM integrations WHERE project_id = ? AND integration_profile = ?
+            )
+        ');
+        foreach ($integrations as $integration) {
+            $stmt->execute([
+                $projectId,
+                $integration[0],
+                $integration[1],
+                $integration[2],
+                $integration[3],
+                $integration[4],
+                $integration[5],
+                $integration[6],
+                $integration[7],
+                $integration[8],
+                $integration[9],
+                $integration[10],
+                $integration[11],
+                $integration[12],
+                $projectId,
+                $integration[2],
+            ]);
+        }
+    } catch (Throwable $e) {
+        // The Add-ons page can still register these connectors manually.
+    }
+}
+
 function findIntegrationForScan(array $integrations, string $scanKind): ?array
 {
     $scanKind = strtolower(trim($scanKind));
@@ -342,6 +425,8 @@ function findIntegrationForScan(array $integrations, string $scanKind): ?array
         'sca' => ['dependency-check', 'dependency_check'],
         'dast' => ['zap'],
         'mobile' => ['mobsf'],
+        'mcp' => ['mcp-hackstrike', 'mcp-hexstrike'],
+        'agent' => ['openai-free-agents', 'openai-agents', 'openchat'],
         default => [],
     };
     $categories = match ($scanKind) {
@@ -349,6 +434,8 @@ function findIntegrationForScan(array $integrations, string $scanKind): ?array
         'sca' => ['sca'],
         'dast' => ['dast'],
         'mobile' => ['mobile'],
+        'mcp' => ['automation'],
+        'agent' => ['assistant'],
         default => [],
     };
 
@@ -411,6 +498,7 @@ function triggerScanFromUi(PDO $pdo, int $projectId, string $scanKind, string $t
         'sca' => 'sca',
         'dast' => 'zap',
         'mobile' => 'sast',
+        'mcp', 'agent' => 'sast',
         default => 'sast',
     };
     $toolLabel = match ($scanKind) {
@@ -418,6 +506,8 @@ function triggerScanFromUi(PDO $pdo, int $projectId, string $scanKind, string $t
         'sca' => 'SCA',
         'dast' => 'DAST',
         'mobile' => 'Mobile APK',
+        'mcp' => 'MCP HackStrike',
+        'agent' => 'OpenAI Free Agents',
         default => strtoupper($scanKind),
     };
     $integration = findIntegrationForScan($integrations, $scanKind);
@@ -508,7 +598,24 @@ function triggerScanFromUi(PDO $pdo, int $projectId, string $scanKind, string $t
     $requestBody = json_encode($requestPayload, JSON_UNESCAPED_SLASHES);
     $requestHeader = "Content-Type: application/json\r\n";
 
-    if ($scanKind === 'dast') {
+    if ($scanKind === 'mcp') {
+        $submitUrl = rtrim($base, '/') . '/rpc';
+        $requestBody = json_encode([
+            'jsonrpc' => '2.0',
+            'id' => (string) $jobId,
+            'method' => 'scan.plan',
+            'params' => $requestPayload,
+        ], JSON_UNESCAPED_SLASHES);
+    } elseif ($scanKind === 'agent') {
+        $submitUrl = rtrim($base, '/') . '/v1/chat/completions';
+        $requestBody = json_encode([
+            'model' => getenv('OPENAI_COMPAT_MODEL') ?: 'autosecforge-free-agents',
+            'messages' => [
+                ['role' => 'system', 'content' => 'You are an AutoSecForge security triage agent. Keep guidance safe and report-focused.'],
+                ['role' => 'user', 'content' => $summary],
+            ],
+        ], JSON_UNESCAPED_SLASHES);
+    } elseif ($scanKind === 'dast') {
         $target = trim($targetUrl !== '' ? $targetUrl : $sourceUrl);
         if ($target === '') {
             return [
@@ -757,6 +864,8 @@ function sampleDashboard(): array
             ['name' => 'sqlmap', 'vendor_name' => 'sqlmap', 'integration_profile' => 'sqlmap', 'type' => 'scanner', 'tool_category' => 'pentest', 'connection_type' => 'python', 'status' => 'configured', 'endpoint_url' => 'http://localhost:6000', 'api_base_url' => 'http://localhost:6000', 'scan_submit_url' => '/run', 'result_url' => '/results', 'auth_type' => 'token', 'documentation_url' => 'https://sqlmap.org/', 'last_test_status' => 'unknown', 'last_test_detail' => 'No test result yet', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Authorized SQL injection testing container for controlled assessments.'],
             ['name' => 'Python Pentest Suite', 'vendor_name' => 'cyber-Security', 'integration_profile' => 'python-pentest-suite', 'type' => 'automation', 'tool_category' => 'pentest', 'connection_type' => 'python', 'status' => 'ready', 'endpoint_url' => 'http://pentest-python:6100', 'api_base_url' => 'http://pentest-python:6100', 'scan_submit_url' => '/catalog', 'result_url' => '/summary', 'auth_type' => 'none', 'documentation_url' => '', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Python-based authorized validation companion for safe checks, evidence notes, and remediation planning.'],
             ['name' => 'Open Attack Surface Management', 'vendor_name' => 'cyber-Security', 'integration_profile' => 'oasm', 'type' => 'assistant', 'tool_category' => 'assistant', 'connection_type' => 'api', 'status' => 'ready', 'endpoint_url' => 'http://oasm:6200', 'api_base_url' => 'http://oasm:6200', 'scan_submit_url' => '/assets', 'result_url' => '/summary', 'auth_type' => 'none', 'documentation_url' => '', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Attack-surface inventory and exposure tracking module for approved assets.'],
+            ['name' => 'MCP HackStrike Fabric', 'vendor_name' => 'AutoSecForge', 'integration_profile' => 'mcp-hackstrike', 'type' => 'automation', 'tool_category' => 'automation', 'connection_type' => 'api', 'status' => 'ready', 'endpoint_url' => 'http://mcp-hackstrike:6300', 'api_base_url' => 'http://mcp-hackstrike:6300', 'scan_submit_url' => '/rpc', 'result_url' => '/connectors', 'auth_type' => 'none', 'documentation_url' => '', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Local JSON-RPC connector fabric for SAST, DAST, SCA, container, and OASM routing.'],
+            ['name' => 'OpenAI Free Agents', 'vendor_name' => 'AutoSecForge', 'integration_profile' => 'openai-free-agents', 'type' => 'assistant', 'tool_category' => 'assistant', 'connection_type' => 'api', 'status' => 'ready', 'endpoint_url' => 'http://openai-free-agents:6400', 'api_base_url' => 'http://openai-free-agents:6400', 'scan_submit_url' => '/v1/chat/completions', 'result_url' => '/agents', 'auth_type' => 'none', 'documentation_url' => '', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'OpenAI-compatible local agent endpoint for triage, remediation, and client report drafting.'],
         ],
         'findings' => [
             ['id' => 1, 'severity' => 'critical', 'status' => 'open', 'claim_state' => 'unclaimed', 'claimed_by' => null, 'claimed_at' => null, 'cwe_id' => 'CWE-78', 'analyst_comment' => '', 'ai_issue_summary' => 'Likely command injection path with direct process execution.', 'ai_summary' => 'Likely command injection path with direct process execution.', 'ai_remediation' => 'Remove the evaluator and replace it with a safe parser.', 'validation_notes' => 'Validate with unit tests and safe input cases only. Do not store exploit steps.', 'ai_confidence' => 91, 'title' => 'Remote code execution pattern', 'category' => 'SAST', 'file_path' => 'app/services/parser.php', 'line_number' => 131, 'description' => 'Untrusted content is passed into a dynamic evaluator.', 'recommendation' => 'Remove the evaluator and replace it with a safe parser.'],

@@ -18,6 +18,7 @@ $canManage = in_array($role, ['admin', 'manager'], true);
 if ($pdo) {
     $project = $pdo->query('SELECT * FROM projects ORDER BY id DESC LIMIT 1')->fetch() ?: null;
     if ($project) {
+        ensureProRuntimeSchema($pdo, (int) $project['id']);
         try {
             $integrationStmt = $pdo->prepare('SELECT * FROM integrations WHERE project_id = ? ORDER BY created_at DESC');
             $integrationStmt->execute([(int) $project['id']]);
@@ -189,6 +190,8 @@ $scanKindLabel = static function (string $kind): string {
         'sca' => 'SCA',
         'dast' => 'DAST',
         'mobile' => 'Mobile APK',
+        'mcp' => 'MCP HackStrike',
+        'agent' => 'OpenAI Agents',
         default => strtoupper($kind),
     };
 };
@@ -212,7 +215,9 @@ foreach ($jobs as $job) {
 
 $pipelineTools = [
     ['label' => 'SonarQube', 'kind' => 'sast', 'ai_checks' => ['Validate code-quality gate and security hotspots.', 'Map findings to CWE and verify remediation owner.']],
+    ['label' => 'MCP HackStrike', 'kind' => 'mcp', 'ai_checks' => ['Route SAST, DAST, SCA, container, and OASM jobs through the connector fabric.', 'Normalize scan intent before tool execution.']],
     ['label' => 'OWASP ZAP', 'kind' => 'dast', 'ai_checks' => ['Review authenticated and unauthenticated attack paths.', 'Validate reflected/stored issues and tag false positives.']],
+    ['label' => 'OpenAI Free Agents', 'kind' => 'agent', 'ai_checks' => ['Draft report-safe triage notes from normalized findings.', 'Generate remediation and retest summaries for client delivery.']],
     ['label' => 'MobSF', 'kind' => 'mobile', 'ai_checks' => ['Confirm APK signature, manifest, and insecure components.', 'Review secrets/storage/network findings and retest notes.']],
 ];
 

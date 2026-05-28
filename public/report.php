@@ -11,6 +11,7 @@ $useSample = !$pdo;
 if ($pdo) {
     $project = $pdo->query('SELECT * FROM projects ORDER BY id DESC LIMIT 1')->fetch() ?: null;
     if ($project) {
+        ensureProRuntimeSchema($pdo, (int) $project['id']);
         $scanStmt = $pdo->prepare('SELECT * FROM scan_runs WHERE project_id = ? ORDER BY created_at DESC');
         $scanStmt->execute([$project['id']]);
         $scanRuns = $scanStmt->fetchAll();
@@ -78,7 +79,7 @@ $domainCards = [
     ['label' => 'SCA', 'count' => count(array_filter($scanRuns, fn($run) => ($run['scan_type'] ?? '') === 'sca')), 'hint' => 'Dependency analysis'],
     ['label' => 'Mobile', 'count' => count(array_filter($integrations, fn($tool) => ($tool['tool_category'] ?? '') === 'mobile')), 'hint' => 'MobSF / APK review'],
     ['label' => 'Pentest', 'count' => count(array_filter($integrations, fn($tool) => ($tool['tool_category'] ?? '') === 'pentest')), 'hint' => 'Authorized testing'],
-    ['label' => 'Automation', 'count' => count(array_filter($integrations, fn($tool) => ($tool['tool_category'] ?? '') === 'automation')), 'hint' => 'Workflow helpers'],
+    ['label' => 'MCP / Agents', 'count' => count(array_filter($integrations, fn($tool) => in_array(($tool['integration_profile'] ?? ''), ['mcp-hackstrike', 'openai-free-agents'], true))), 'hint' => 'Connector routing + AI triage'],
 ];
 $user = currentUser();
 $role = currentUserRole();
@@ -193,6 +194,33 @@ $role = currentUserRole();
         <div><span>Target</span><strong><?= e((string) ($project['target_url'] ?? 'n/a')) ?></strong></div>
         <div><span>Coverage model</span><strong>SAST, DAST, SCA, MobSF, and Python pentest validation</strong></div>
         <div><span>Delivery</span><strong>HTML report, printable view, and MySQL archive</strong></div>
+      </div>
+      </section>
+
+      <section class="panel">
+      <div class="panel-header">
+        <h3>MCP and agent orchestration</h3>
+        <span class="muted">README-aligned local Pro stack</span>
+      </div>
+      <div class="ops-grid">
+        <div>
+          <strong>MCP HackStrike fabric</strong>
+          <span>SAST, DAST, SCA, container, and Open ASM connectors are routed through the local JSON-RPC broker.</span>
+          <div class="finding-badges">
+            <?php foreach (mcpFabricConnectors() as $connector): ?>
+              <span class="tag"><?= e($connector['type']) ?></span>
+            <?php endforeach; ?>
+          </div>
+        </div>
+        <div>
+          <strong>OpenAI-compatible free agents</strong>
+          <span>Local agents draft triage, remediation, and report summaries without requiring a paid external model.</span>
+          <div class="finding-badges">
+            <?php foreach (agentRoster() as $agent): ?>
+              <span class="tag"><?= e($agent['name']) ?></span>
+            <?php endforeach; ?>
+          </div>
+        </div>
       </div>
       </section>
 

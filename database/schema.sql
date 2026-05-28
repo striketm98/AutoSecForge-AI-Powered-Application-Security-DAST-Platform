@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
   project_id INT NOT NULL,
   scan_run_id INT NOT NULL,
   integration_id INT DEFAULT NULL,
-  scan_kind ENUM('sast','sca','dast','mobile') NOT NULL,
+  scan_kind ENUM('sast','sca','dast','mobile','mcp','agent') NOT NULL,
   status ENUM('queued','submitted','running','completed','failed') NOT NULL DEFAULT 'queued',
   target_url VARCHAR(255) DEFAULT NULL,
   source_url VARCHAR(255) DEFAULT NULL,
@@ -164,6 +164,9 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
+
+ALTER TABLE scan_jobs
+  MODIFY scan_kind ENUM('sast','sca','dast','mobile','mcp','agent') NOT NULL;
 
 ALTER TABLE integrations
   ADD COLUMN IF NOT EXISTS vendor_name VARCHAR(120) DEFAULT NULL,
@@ -274,6 +277,16 @@ INSERT INTO integrations (project_id, name, vendor_name, integration_profile, ty
 SELECT p.id, 'Open Attack Surface Management', 'cyber-Security', 'oasm', 'assistant', 'assistant', 'api', 'ready', 'http://oasm:6200', 'http://oasm:6200', '/assets', '/summary', 'none', NULL, 'Attack-surface inventory and exposure tracking module for approved assets.'
 FROM projects p
 WHERE NOT EXISTS (SELECT 1 FROM integrations WHERE name = 'Open Attack Surface Management');
+
+INSERT INTO integrations (project_id, name, vendor_name, integration_profile, type, tool_category, connection_type, status, endpoint_url, api_base_url, scan_submit_url, result_url, auth_type, documentation_url, description)
+SELECT p.id, 'MCP HackStrike Fabric', 'AutoSecForge', 'mcp-hackstrike', 'automation', 'automation', 'api', 'ready', 'http://mcp-hackstrike:6300', 'http://mcp-hackstrike:6300', '/rpc', '/connectors', 'none', NULL, 'Local JSON-RPC connector fabric for SAST, DAST, SCA, container, and OASM routing.'
+FROM projects p
+WHERE NOT EXISTS (SELECT 1 FROM integrations WHERE name = 'MCP HackStrike Fabric');
+
+INSERT INTO integrations (project_id, name, vendor_name, integration_profile, type, tool_category, connection_type, status, endpoint_url, api_base_url, scan_submit_url, result_url, auth_type, documentation_url, description)
+SELECT p.id, 'OpenAI Free Agents', 'AutoSecForge', 'openai-free-agents', 'assistant', 'assistant', 'api', 'ready', 'http://openai-free-agents:6400', 'http://openai-free-agents:6400', '/v1/chat/completions', '/agents', 'none', NULL, 'OpenAI-compatible local agent endpoint for triage, remediation, and client report drafting.'
+FROM projects p
+WHERE NOT EXISTS (SELECT 1 FROM integrations WHERE name = 'OpenAI Free Agents');
 
 INSERT INTO scan_runs (project_id, scan_type, tool_name, status, started_at, completed_at, summary, raw_payload)
 SELECT p.id, 'sonarqube', 'SonarQube', 'completed', NOW() - INTERVAL 3 DAY, NOW() - INTERVAL 3 DAY + INTERVAL 12 MINUTE,

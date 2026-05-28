@@ -184,6 +184,12 @@ h3 { font-size: var(--heading-3); line-height: 1.2; margin-bottom: 0; letter-spa
   gap: 14px;
 }
 
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .access-grid div {
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(255,255,255,0.06);
@@ -191,10 +197,24 @@ h3 { font-size: var(--heading-3); line-height: 1.2; margin-bottom: 0; letter-spa
   padding: 16px;
 }
 
+.ops-grid div {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 18px;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
 .access-grid span {
   display: block;
   color: var(--muted);
   margin-bottom: 8px;
+}
+
+.ops-grid span {
+  color: var(--muted);
+  line-height: 1.5;
 }
 
 .stack { display: grid; gap: 12px; }
@@ -507,6 +527,7 @@ textarea {
   .hero-card, .panel, .report-summary, .scope-grid, .import-form { grid-template-columns: 1fr; }
   .scan-launch-form { grid-template-columns: 1fr; }
   .tool-live-grid { grid-template-columns: 1fr; }
+  .ops-grid { grid-template-columns: 1fr; }
   .hero-card, .panel { grid-column: 1 / -1; }
   .report-summary { grid-template-columns: repeat(2, 1fr); }
   .topbar, .report-header, .panel-header, .topbar-actions, .report-actions { flex-direction: column; align-items: flex-start; }

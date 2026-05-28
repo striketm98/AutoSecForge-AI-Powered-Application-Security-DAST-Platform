@@ -29,7 +29,7 @@ $sourceUrl = trim((string) ($_POST['source_url'] ?? ''));
 $artifactPath = null;
 $sourceMode = $sourceUrl !== '' ? 'url' : 'manual';
 
-if (!in_array($scanKind, ['sast', 'sca', 'dast', 'mobile', 'suite'], true)) {
+if (!in_array($scanKind, ['sast', 'sca', 'dast', 'mobile', 'mcp', 'agent', 'suite'], true)) {
     $_SESSION['home_error'] = 'Invalid scan type selected.';
     header('Location: home.php');
     exit;
@@ -71,6 +71,7 @@ try {
         header('Location: home.php');
         exit;
     }
+    ensureProRuntimeSchema($pdo, (int) $project['id']);
 
     $integrations = [];
     try {
@@ -82,7 +83,7 @@ try {
     }
 
     if ($scanKind === 'suite') {
-        $kinds = ['sast', 'dast', 'mobile']; // SonarQube + OWASP ZAP + MobSF
+        $kinds = ['mcp', 'sast', 'sca', 'dast', 'mobile', 'agent'];
         $messages = [];
         $failed = false;
         foreach ($kinds as $kind) {
@@ -103,7 +104,7 @@ try {
         if ($failed) {
             $_SESSION['home_error'] = 'Suite trigger completed with partial failures. ' . implode(' ', $messages);
         } else {
-            $_SESSION['home_message'] = 'SonarQube + OWASP ZAP + MobSF suite started. ' . implode(' ', $messages);
+            $_SESSION['home_message'] = 'MCP HackStrike + SAST + SCA + DAST + MobSF + OpenAI Free Agents suite started. ' . implode(' ', $messages);
         }
     } else {
         $result = triggerScanFromUi(

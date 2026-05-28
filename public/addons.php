@@ -58,6 +58,38 @@ $connectorPresets = [
         'documentation_url' => 'https://docs.veracode.com/',
         'description' => 'Enterprise SAST connector for application inventory, scan orchestration, and finding import.',
     ],
+    'mcp-hackstrike' => [
+        'label' => 'MCP HackStrike',
+        'vendor_name' => 'AutoSecForge',
+        'integration_profile' => 'mcp-hackstrike',
+        'type' => 'automation',
+        'tool_category' => 'automation',
+        'connection_type' => 'api',
+        'status' => 'ready',
+        'endpoint_url' => 'http://mcp-hackstrike:6300',
+        'api_base_url' => 'http://mcp-hackstrike:6300',
+        'scan_submit_url' => '/rpc',
+        'result_url' => '/connectors',
+        'auth_type' => 'none',
+        'documentation_url' => '',
+        'description' => 'Local JSON-RPC connector fabric for SAST, DAST, SCA, container, and Open ASM routing.',
+    ],
+    'openai-free-agents' => [
+        'label' => 'OpenAI Free Agents',
+        'vendor_name' => 'AutoSecForge',
+        'integration_profile' => 'openai-free-agents',
+        'type' => 'assistant',
+        'tool_category' => 'assistant',
+        'connection_type' => 'api',
+        'status' => 'ready',
+        'endpoint_url' => 'http://openai-free-agents:6400',
+        'api_base_url' => 'http://openai-free-agents:6400',
+        'scan_submit_url' => '/v1/chat/completions',
+        'result_url' => '/agents',
+        'auth_type' => 'none',
+        'documentation_url' => '',
+        'description' => 'OpenAI-compatible local agent endpoint for triage, remediation, and client report drafting.',
+    ],
 ];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($pdo instanceof PDO) && (string) ($_POST['action'] ?? '') === 'test_connection') {
@@ -172,6 +204,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string) ($_POST['action'] ?? '') !
 $projects = [];
 $integrations = [];
 if ($pdo) {
+    ensureProRuntimeSchema($pdo);
     $projects = $pdo->query('SELECT id, name, client_name FROM projects ORDER BY id DESC')->fetchAll();
     try {
         $integrations = $pdo->query('SELECT i.*, p.name AS project_name, p.client_name FROM integrations i INNER JOIN projects p ON p.id = i.project_id ORDER BY i.created_at DESC')->fetchAll();
