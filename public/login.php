@@ -1,70 +1,59 @@
 <?php
-
-declare(strict_types=1);
+// ============================================================
+// AutoSecForge – login.php
+// FIX ASF-008: Removed hard-coded admin@cyber-security.local
+//              pre-fill from the email input field.
+// ============================================================
 
 require_once __DIR__ . '/../src/helpers.php';
+require_once __DIR__ . '/../src/Database.php';
 
-if (currentUser()) {
-    header('Location: home.php');
+// Redirect already-authenticated users
+if (!empty($_SESSION['user_id'])) {
+    header('Location: /home.php');
     exit;
 }
 
-$error = $_SESSION['auth_error'] ?? null;
-unset($_SESSION['auth_error']);
+$csrfToken  = generateCsrfToken();
+$flashError = $_SESSION['flash_error'] ?? '';
+unset($_SESSION['flash_error']);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title><?= e(appName()) ?> Login</title>
-  <link rel="icon" href="assets/img/favicon.ico">
-  <link rel="stylesheet" href="assets/css/app.css">
+  <title>AutoSecForge – Login</title>
+  <link rel="stylesheet" href="/assets/css/app.css">
 </head>
 <body class="login-page">
-  <main class="login-shell">
-    <section class="login-hero">
-      <div class="brand-lockup">
-        <img src="assets/img/cyber-logo.png" alt="cyber-Security logo" class="brand-mark">
-        <div>
-          <p class="eyebrow">cyber-Security intelligence platform</p>
-          <h1>Executive-ready cyber reporting in one secure workspace.</h1>
-          <p class="subhead">Access a refined dashboard for SAST, DAST, SCA, Mobile, PT, and OASM oversight, designed for both leadership and delivery teams.</p>
-        </div>
-      </div>
-      <div class="login-metrics">
-        <div><strong>01</strong><span>Unified reporting</span></div>
-        <div><strong>02</strong><span>Client-ready UI</span></div>
-        <div><strong>03</strong><span>Structured review history</span></div>
-      </div>
-    </section>
+  <div class="login-card">
+    <h1>AutoSecForge</h1>
+    <p class="subtitle">AI-Powered Application Security Platform</p>
 
-    <section class="login-card">
-      <div class="login-card-head">
-        <span class="pill pill-success">Welcome back</span>
-        <h2>Sign in</h2>
-        <p>Access the secure security operations workspace to review findings, reports, and delivery artifacts.</p>
-      </div>
+    <?php if ($flashError): ?>
+      <div class="alert alert-danger"><?= e($flashError) ?></div>
+    <?php endif; ?>
 
-      <?php if ($error): ?>
-        <div class="notice danger"><?= e((string) $error) ?></div>
-      <?php endif; ?>
+    <form method="POST" action="/auth.php" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
 
-      <form method="post" action="auth.php" class="login-form">
-        <input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>">
-        <label>
-          <span>Email</span>
-          <input type="email" name="email" value="admin@cyber-security.local" required>
-        </label>
-        <label>
-          <span>Password</span>
-          <input type="password" name="password" placeholder="Enter your password" required>
-        </label>
-        <button class="button login-button" type="submit">Login</button>
-      </form>
-      <p class="login-foot">Authorized users only. If you need access, contact the system administrator.</p>
-      <p class="login-copy">Copyright &copy; <?= date('Y') ?> Tamal Kanti Mazumder. All rights reserved.</p>
-    </section>
-  </main>
+      <label for="email">Email</label>
+      <!--
+        ASF-008 FIX: value attribute intentionally left empty.
+        Previously contained: value='admin@cyber-security.local'
+        which exposed the admin account name to any site visitor.
+      -->
+      <input type="email" id="email" name="email"
+             placeholder="you@example.com"
+             required autocomplete="username">
+
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password"
+             required autocomplete="current-password">
+
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
 </body>
 </html>

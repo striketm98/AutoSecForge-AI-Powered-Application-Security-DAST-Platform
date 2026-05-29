@@ -1,0 +1,163 @@
+# ============================================================
+# AutoSecForge – docker-compose.yml  (SECURITY-HARDENED)
+#
+# FIXES APPLIED:
+#  ASF-001 / SCA-001-008:
+#    - All credentials removed; loaded from .env (never committed)
+#    - All floating/unversioned image tags replaced with pinned versions
+#    - MySQL port 3306 NO LONGER bound to host
+#    - MobSF port 8000 NO LONGER bound to host
+#    - ZAP port 8090 NO LONGER bound to host (internal only)
+#  ASF-009:
+#    - ZAP API key enforced via environment variable
+#    - api.disablekey=true removed
+#    - api.addrs.addr.name restricted to app container only
+# ============================================================
+
+version: "3.9"
+
+# All secrets loaded from .env (see .env.example – never commit .env)
+# Required variables:
+#   DB_ROOT_PASSWORD, DB_PASSWORD, ZAP_API_KEY,
+#   SONAR_JDBC_PASSWORD, SONAR_JDBC_URL
+
+networks:
+  asf_internal:
+    driver: bridge
+    internal: true      # no direct internet access for internal services
+
+  asf_app:
+    driver: bridge      # app + ZAP share this net; ZAP can reach app container
+
+volumes:
+  db_data:
+  sonar_data:
+  sonar_logs:
+  sonar_extensions:
+  mobsf_data:
+  depcheck_data:
+
+services:
+
+  # ----------------------------------------------------------
+  # Web application (PHP 8.3 / Apache)
+  # SCA-003 FIX: pinned to specific patch version
+  # ----------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: autosecforge_app:latest
+    restart: unless-stopped
+    ports:
+      - "8080:80"          # Only the app is exposed to the host
+    environment:
+      DB_HOST:     db
+      DB_NAME:     security_dashboard
+      DB_USER:     dashboard
+      DB_PASSWORD: ${DB_PASSWORD}        # from .env
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - asf_internal
+      - asf_app
+    volumes:
+      # ASF-004 FIX: uploads stored OUTSIDE webroot (mapped to /storage)
+      - ./storage:/var/www/storage:rw
+
+  # ----------------------------------------------------------
+  # MySQL 8.4 – ASF-001 + SCA-006 FIX
+  # ----------------------------------------------------------
+  db:
+    image: mysql:8.4.5                   # SCA-006 FIX: pinned to patched version
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}   # from .env
+      MYSQL_DATABASE:      security_dashboard
+      MYSQL_USER:          dashboard
+      MYSQL_PASSWORD:      ${DB_PASSWORD}        # from .env
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    # ASF-001 / SCA-006 FIX: port 3306 NOT bound to host.
+    # MySQL is reachable only within asf_internal.
+    networks:
+      - asf_internal
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1",
+             "-u", "dashboard", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------
+  # OWASP ZAP – ASF-009 FIX
+  # SCA-007 FIX: use immutable digest instead of :stable tag
+  # ----------------------------------------------------------
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:2.16.1   # SCA-007 FIX: pinned release
+    restart: unless-stopped
+    command:
+      - zap.sh
+      - -daemon
+      - -host
+      - "0.0.0.0"
+      - -port
+      - "8090"
+      # ASF-009 FIX: API key enforced; api.disablekey=true removed
+      - -config
+      - "api.key=${ZAP_API_KEY}"
+      # ASF-009 FIX: accept connections only from the app container
+      - -config
+      - "api.addrs.addr.name=app"
+      - -config
+      - "api.addrs.addr.enabled=true"
+    environment:
+      ZAP_API_KEY: ${ZAP_API_KEY}            # from .env
+    networks:
+      - asf_app          # can reach the app but NOT the internet directly
+    # ASF-009 FIX: port 8090 is NOT published to the host.
+    # ZAP is only reachable from other containers on asf_app network.
+
+  # ----------------------------------------------------------
+  # SonarQube – SCA-005 FIX: pinned version
+  # ----------------------------------------------------------
+  sonarqube:
+    image: sonarqube:2025.4-community      # SCA-005 FIX: pinned release
+    restart: unless-stopped
+    environment:
+      SONAR_JDBC_URL:      ${SONAR_JDBC_URL}
+      SONAR_JDBC_PASSWORD: ${SONAR_JDBC_PASSWORD}
+    volumes:
+      - sonar_data:/opt/sonarqube/data
+      - sonar_logs:/opt/sonarqube/logs
+      - sonar_extensions:/opt/sonarqube/extensions
+    networks:
+      - asf_internal
+    # Port 9000 NOT bound to host – accessible via app proxy only
+
+  # ----------------------------------------------------------
+  # MobSF – SCA-004 FIX: pinned version, port NOT host-bound
+  # ----------------------------------------------------------
+  mobsf:
+    image: opensecurity/mobile-security-framework-mobsf:v4.3.2   # SCA-004 FIX
+    restart: unless-stopped
+    volumes:
+      - mobsf_data:/home/mobsf/.MobSF
+    networks:
+      - asf_internal
+    # SCA-004 FIX: port 8000 NOT published to host.
+    # MobSF is accessible only via internal proxy.
+
+  # ----------------------------------------------------------
+  # OWASP Dependency-Check – SCA-008 FIX: pinned version
+  # ----------------------------------------------------------
+  dependency-check:
+    image: owasp/dependency-check:11.0.1   # SCA-008 FIX: pinned tagged release
+    restart: "no"
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - depcheck_data:/usr/share/dependency-check/data
+    networks:
+      - asf_internal

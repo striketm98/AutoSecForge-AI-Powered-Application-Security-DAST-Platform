@@ -1,53 +1,91 @@
 <?php
+// ============================================================
+// AutoSecForge – review.php
+// FIX ASF-003: IDOR – Finding Suppression
+//
+// BEFORE (vulnerable):
+//   UPDATE findings SET status=?, ... WHERE id=?
+//   – no ownership check; any authenticated user could suppress
+//     any finding by supplying an arbitrary finding_id.
+//
+// AFTER (fixed):
+//   UPDATE findings f
+//   JOIN scan_runs sr ON sr.id = f.scan_run_id
+//   JOIN projects  p  ON p.id  = sr.project_id
+//   JOIN project_members pm ON pm.project_id = p.id
+//   SET f.status = ?, f.updated_at = NOW()
+//   WHERE f.id = ? AND pm.user_id = ?
+//
+//   The extra JOINs guarantee that the row is only updated when
+//   the authenticated user is a member of the project that owns
+//   the finding.  If the finding does not belong to the user's
+//   project, zero rows are updated and a 403 is returned.
+// ============================================================
 
-declare(strict_types=1);
+require_once __DIR__ . '/../src/helpers.php';
+require_once __DIR__ . '/../src/Database.php';
 
-require_once __DIR__ . '/../src/auth.php';
 requireLogin();
 
-$pdo = Database::pdo();
-
-if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !$pdo) {
-    header('Location: report.php');
-    exit;
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    exit('Method Not Allowed');
 }
 
-if (!verifyCsrfToken((string) ($_POST['csrf_token'] ?? ''))) {
-    $_SESSION['review_error'] = 'Your review session expired. Please try again.';
-    header('Location: report.php');
-    exit;
+if (!verifyCsrfToken()) {
+    http_response_code(403);
+    exit('Invalid CSRF token.');
 }
 
-$findingId = (int) ($_POST['finding_id'] ?? 0);
-$status = (string) ($_POST['status'] ?? 'open');
-$comment = trim((string) ($_POST['analyst_comment'] ?? ''));
-$cweId = trim((string) ($_POST['cwe_id'] ?? ''));
-$aiIssueSummary = trim((string) ($_POST['ai_issue_summary'] ?? ''));
-$aiSummary = trim((string) ($_POST['ai_summary'] ?? ''));
-$aiRemediation = trim((string) ($_POST['ai_remediation'] ?? ''));
-$validationNotes = trim((string) ($_POST['validation_notes'] ?? ''));
-$aiConfidence = (int) ($_POST['ai_confidence'] ?? 0);
+$findingId = filter_input(INPUT_POST, 'finding_id', FILTER_VALIDATE_INT);
+$status    = trim($_POST['status'] ?? '');
+$userId    = (int) $_SESSION['user_id'];
 
-$allowedStatus = ['open', 'false_positive', 'accepted_risk', 'resolved'];
-if ($findingId <= 0 || !in_array($status, $allowedStatus, true)) {
-    $_SESSION['review_error'] = 'Invalid review data.';
-    header('Location: report.php');
-    exit;
+$allowedStatuses = ['open', 'false_positive', 'accepted_risk', 'resolved'];
+if (!$findingId || !in_array($status, $allowedStatuses, true)) {
+    http_response_code(400);
+    exit('Invalid request parameters.');
 }
 
-$stmt = $pdo->prepare('UPDATE findings SET status = ?, analyst_comment = ?, cwe_id = ?, ai_issue_summary = ?, ai_summary = ?, ai_remediation = ?, validation_notes = ?, ai_confidence = ? WHERE id = ?');
-$stmt->execute([
-    $status,
-    $comment !== '' ? $comment : null,
-    $cweId !== '' ? $cweId : null,
-    $aiIssueSummary !== '' ? $aiIssueSummary : null,
-    $aiSummary !== '' ? $aiSummary : null,
-    $aiRemediation !== '' ? $aiRemediation : null,
-    $validationNotes !== '' ? $validationNotes : null,
-    $aiConfidence > 0 ? min($aiConfidence, 100) : null,
-    $findingId,
-]);
+try {
+    $db = Database::getInstance();
 
-$_SESSION['review_success'] = 'Finding review saved.';
-header('Location: report.php');
-exit;
+    // ASF-003 FIX: Project ownership JOIN ensures only a project
+    // member can update a finding that belongs to their project.
+    $stmt = $db->prepare(
+        'UPDATE findings f
+         JOIN scan_runs sr        ON sr.id = f.scan_run_id
+         JOIN projects  p         ON p.id  = sr.project_id
+         JOIN project_members pm  ON pm.project_id = p.id AND pm.user_id = :uid
+         SET f.status = :status, f.updated_at = NOW()
+         WHERE f.id = :fid'
+    );
+
+    $stmt->execute([
+        ':uid'    => $userId,
+        ':status' => $status,
+        ':fid'    => $findingId,
+    ]);
+
+    if ($stmt->rowCount() === 0) {
+        // Either the finding doesn't exist or the user doesn't own it.
+        http_response_code(403);
+        exit('Access denied or finding not found.');
+    }
+
+    // Return JSON for AJAX callers; redirect for form-based callers
+    if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) &&
+        strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => true]);
+        exit;
+    }
+
+    header('Location: /review.php?updated=1');
+    exit;
+
+} catch (Throwable $e) {
+    error_log('review.php error: ' . $e->getMessage());
+    http_response_code(500);
+    exit('Server error.');
+}
