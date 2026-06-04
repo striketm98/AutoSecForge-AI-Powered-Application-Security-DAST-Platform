@@ -10,6 +10,10 @@
 --   with a known password.  A one-time setup script (setup.php)
 --   prompts the operator for a strong password on first run and
 --   stores it as an Argon2ID hash.
+--
+-- ASF-009 FIX: Added foreign key constraints to enforce referential
+--   integrity and prevent orphaned records. Cascading deletes ensure
+--   data consistency when parent records are removed.
 -- ============================================================
 
 CREATE DATABASE IF NOT EXISTS security_dashboard
@@ -40,7 +44,9 @@ CREATE TABLE IF NOT EXISTS projects (
     description TEXT,
     created_by  INT UNSIGNED NOT NULL,
     created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id)
+    PRIMARY KEY (id),
+    CONSTRAINT fk_projects_created_by FOREIGN KEY (created_by) 
+        REFERENCES users(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- Project membership (for ASF-003 IDOR fix) --------------
@@ -48,7 +54,11 @@ CREATE TABLE IF NOT EXISTS project_members (
     project_id  INT UNSIGNED NOT NULL,
     user_id     INT UNSIGNED NOT NULL,
     role        ENUM('owner','member','viewer') NOT NULL DEFAULT 'member',
-    PRIMARY KEY (project_id, user_id)
+    PRIMARY KEY (project_id, user_id),
+    CONSTRAINT fk_project_members_project_id FOREIGN KEY (project_id) 
+        REFERENCES projects(id) ON DELETE CASCADE,
+    CONSTRAINT fk_project_members_user_id FOREIGN KEY (user_id) 
+        REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- Scan runs ----------------------------------------------
@@ -61,7 +71,11 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     finished_at DATETIME,
     created_by  INT UNSIGNED NOT NULL,
     PRIMARY KEY (id),
-    KEY idx_scan_runs_project (project_id)
+    KEY idx_scan_runs_project (project_id),
+    CONSTRAINT fk_scan_runs_project_id FOREIGN KEY (project_id) 
+        REFERENCES projects(id) ON DELETE CASCADE,
+    CONSTRAINT fk_scan_runs_created_by FOREIGN KEY (created_by) 
+        REFERENCES users(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- Findings -----------------------------------------------
@@ -79,7 +93,9 @@ CREATE TABLE IF NOT EXISTS findings (
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    KEY idx_findings_scan_run (scan_run_id)
+    KEY idx_findings_scan_run (scan_run_id),
+    CONSTRAINT fk_findings_scan_run_id FOREIGN KEY (scan_run_id) 
+        REFERENCES scan_runs(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- Clients ------------------------------------------------
@@ -90,7 +106,9 @@ CREATE TABLE IF NOT EXISTS clients (
     logo_filename  VARCHAR(255),
     created_by     INT UNSIGNED NOT NULL,
     created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id)
+    PRIMARY KEY (id),
+    CONSTRAINT fk_clients_created_by FOREIGN KEY (created_by) 
+        REFERENCES users(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- Addons -------------------------------------------------
@@ -101,5 +119,7 @@ CREATE TABLE IF NOT EXISTS addons (
     created_by   INT UNSIGNED NOT NULL,
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_addons_name (name)
+    UNIQUE KEY uq_addons_name (name),
+    CONSTRAINT fk_addons_created_by FOREIGN KEY (created_by) 
+        REFERENCES users(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
