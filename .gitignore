@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 # ASF-001: Never expose secrets
 .env
 ssl/
@@ -6,3 +7,7 @@ uploads/
 *.log
 *.sql
 backup_*.sql
+=======
+__pycache__/
+*.py[cod]
+>>>>>>> Stashed changes
