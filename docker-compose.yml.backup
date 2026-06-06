@@ -1,0 +1,92 @@
+version: '3.8'
+
+networks:
+  asf-net:
+    driver: bridge
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+    networks:
+      - asf-net
+
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "3306:3306"
+    networks:
+      - asf-net
+
+  sonarqube:
+    image: sonarqube:10-community
+    ports:
+      - "9000:9000"
+    networks:
+      - asf-net
+
+  zap:
+    image: zaproxy/zap-stable:latest
+    command: zap.sh -daemon -host 0.0.0.0 -port 8090 -config api.key=${ZAP_API_KEY}
+    ports:
+      - "8091:8090"
+    networks:
+      - asf-net
+
+  mobsf:
+    image: opensecurity/mobile-security-framework-mobsf:latest
+    ports:
+      - "8000:8000"
+    networks:
+      - asf-net
+
+  trivy:
+    image: aquasec/trivy:latest
+    command: server --listen 0.0.0.0:8081
+    ports:
+      - "8081:8081"
+    networks:
+      - asf-net
+
+  pentest-python:
+    build: ./tool-wrappers/pentest-python
+    deploy:
+      replicas: 3
+    networks:
+      - asf-net
+
+  oasm:
+    build: ./tool-wrappers/oasm
+    ports:
+      - "6200:6200"
+    networks:
+      - asf-net
+
+  mcp-hackstrike:
+    build: ./tool-wrappers/mcp-hackstrike
+    ports:
+      - "6300:6300"
+    networks:
+      - asf-net
+
+  openai-free-agents:
+    build: ./tool-wrappers/openai-free-agents
+    ports:
+      - "6400:6400"
+    networks:
+      - asf-net
+
+#  sqlmap:
+#    image: ftmahringer/sqlmap:latest
+#    ports:
+#      - "6000:6000"
+#    networks:
+#      - asf-net
