@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60">
-  <defs><linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#667eea"/><stop offset="100%" stop-color="#764ba2"/></linearGradient></defs>
-  <rect width="200" height="60" rx="10" fill="url(#grad)"/>
-  <text x="20" y="38" font-family="Arial,sans-serif" font-size="20" font-weight="bold" fill="white">🛡️ AutoSecForge</text>
-  <text x="155" y="38" font-family="Arial,sans-serif" font-size="10" fill="#c3dafe">Pro</text>
-</svg>
