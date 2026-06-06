@@ -1,0 +1,8 @@
+# ASF-001: Never expose secrets
+.env
+ssl/
+logs/
+uploads/
+*.log
+*.sql
+backup_*.sql

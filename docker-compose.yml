@@ -1,134 +1,196 @@
-services:
-  app:
-    build: .
-    container_name: security-dashboard-app
-    ports:
-      - "8080:80"
-    environment:
-      DB_HOST: db
-      DB_PORT: 3306
-      DB_NAME: security_dashboard
-      DB_USER: dashboard
-      DB_PASSWORD: dashboard123
-      APP_NAME: "AutoSecForge Pro"
-    depends_on:
-      - db
-      - mcp-hackstrike
-      - openai-free-agents
-    volumes:
-      - ./:/var/www/html
+# AutoSecForge Pro v12 — Docker Compose
+# Architecture: PHP 8.3 + Apache + MySQL 8.4 (open-source core)
+# All internal services (ports 6000-6400) are NOT exposed to host
+# unless explicitly required for management; see security note.
 
+networks:
+  asf-net:
+    driver: bridge
+    internal: false   # Required: app container needs build-time internet
+
+volumes:
+  mysql_data:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  mobsf_data:
+  trivy_cache:
+  grafana_data:
+
+services:
+  # ── Primary Database (MySQL 8.4) ─────────────────────────────────
   db:
     image: mysql:8.4
     container_name: security-dashboard-db
+    networks: [asf-net]
     environment:
-      MYSQL_DATABASE: security_dashboard
-      MYSQL_USER: dashboard
-      MYSQL_PASSWORD: dashboard123
-      MYSQL_ROOT_PASSWORD: root123
-    ports:
-      - "3306:3306"
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE:      ${DB_DATABASE}
+      MYSQL_USER:          ${DB_USER}
+      MYSQL_PASSWORD:      ${DB_PASSWORD}
     volumes:
-      - db_data:/var/lib/mysql
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - mysql_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${DB_USER}", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    # SECURITY: Never expose port 3306 to host in production
+    # Uncomment only for local debugging: ports: ["127.0.0.1:3306:3306"]
 
-  sonarqube:
-    image: sonarqube:lts-community
-    container_name: security-dashboard-sonarqube
-    environment:
-      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+  # ── PHP 8.3 + Apache Dashboard ───────────────────────────────────
+  app:
+    build: .
+    container_name: security-dashboard-app
+    networks: [asf-net]
     ports:
-      - "9000:9000"
+      - "127.0.0.1:8080:80"   # Bind to localhost only
+    environment:
+      DB_HOST:        security-dashboard-db
+      DB_PORT:        3306
+      DB_DATABASE:    ${DB_DATABASE}
+      DB_USER:        ${DB_USER}
+      DB_PASSWORD:    ${DB_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET}
+      APP_KEY:        ${APP_KEY}
+      ZAP_API_KEY:    ${ZAP_API_KEY}
+    volumes:
+      - ./src:/var/www/html/src:ro
+      - ./public:/var/www/html/public:ro
+      - ./uploads:/var/www/html/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── SAST: SonarQube ──────────────────────────────────────────────
+  sonarqube:
+    image: sonarqube:10-community
+    container_name: security-dashboard-sonarqube
+    networks: [asf-net]
+    ports:
+      - "127.0.0.1:9000:9000"
+    environment:
+      SONAR_JDBC_URL:      "jdbc:mysql://security-dashboard-db:3306/${DB_DATABASE}?useSSL=false&allowPublicKeyRetrieval=true"
+      SONAR_JDBC_USERNAME: ${DB_USER}
+      SONAR_JDBC_PASSWORD: ${DB_PASSWORD}
     volumes:
       - sonarqube_data:/opt/sonarqube/data
       - sonarqube_extensions:/opt/sonarqube/extensions
       - sonarqube_logs:/opt/sonarqube/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
+  # ── DAST: OWASP ZAP ──────────────────────────────────────────────
+  # ASF-009 FIX: ZAP_API_KEY is mandatory and passed from .env
   zap:
-    image: ghcr.io/zaproxy/zaproxy:stable
+    image: zaproxy/zap-stable:latest
     container_name: security-dashboard-zap
-    command: ["zap.sh", "-daemon", "-host", "0.0.0.0", "-port", "8090", "-config", "api.disablekey=true", "-config", "api.addrs.addr.name=.*", "-config", "api.addrs.addr.regex=true"]
+    networks: [asf-net]
     ports:
-      - "8090:8090"
-    volumes:
-      - zap_reports:/zap/wrk
+      - "127.0.0.1:8090:8090"
+    command: >
+      zap.sh -daemon
+      -host 0.0.0.0
+      -port 8090
+      -config api.key=${ZAP_API_KEY}
+      -config api.addrs.addr.name=.*
+      -config api.addrs.addr.regex=true
+    environment:
+      ZAP_API_KEY: ${ZAP_API_KEY}
+    restart: unless-stopped
 
-  dependency-check:
-    image: owasp/dependency-check:latest
-    container_name: security-dashboard-dependency-check
-    entrypoint: ["sleep", "infinity"]
-    volumes:
-      - ./:/src
-      - dependency_check_reports:/report
-
+  # ── Mobile Security: MobSF ───────────────────────────────────────
   mobsf:
     image: opensecurity/mobile-security-framework-mobsf:latest
     container_name: security-dashboard-mobsf
-    user: root
+    networks: [asf-net]
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - mobsf_data:/home/mobsf/.MobSF
-    environment:
-      MOBSF_USER: mobsf
-      MOBSF_PASS: mobsf
+    restart: unless-stopped
 
-  sqlmap:
-    build:
-      context: ./tools/sqlmap
-    container_name: security-dashboard-sqlmap
-    ports:
-      - "6000:6000"
-    volumes:
-      - sqlmap_data:/workspace
-    entrypoint: ["sleep", "infinity"]
-
-  pentest-python:
-    build:
-      context: ./tools/pentest-python
-    container_name: security-dashboard-pentest-python
-    ports:
-      - "6100:6100"
-    volumes:
-      - pentest_python_data:/workspace
-    entrypoint: ["python", "-m", "pentest_api"]
-
-  oasm:
-    build:
-      context: ./tools/oasm
-    container_name: security-dashboard-oasm
-    ports:
-      - "6200:6200"
-    volumes:
-      - oasm_data:/workspace
-    entrypoint: ["python", "-m", "oasm_api"]
-
+  # ── MCP HackStrike (JSON-RPC mesh, port 6300) ────────────────────
   mcp-hackstrike:
-    build:
-      context: ./tools/mcp-hackstrike
+    build: ./mcp-server
     container_name: autosecforge-mcp-hackstrike
-    ports:
-      - "6300:6300"
-    entrypoint: ["python", "-m", "mcp_hackstrike_api"]
+    networks: [asf-net]
+    # SECURITY: Internal only — no host port mapping
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
 
+  # ── AI Agents (port 6400) ─────────────────────────────────────────
   openai-free-agents:
-    build:
-      context: ./tools/openai-free-agents
+    build: ./ai-agent
     container_name: autosecforge-openai-free-agents
-    ports:
-      - "6400:6400"
-    environment:
-      OPENAI_COMPAT_MODEL: autosecforge-free-agents
-    entrypoint: ["python", "-m", "openai_free_agents_api"]
+    networks: [asf-net]
+    # SECURITY: Internal only — no host port mapping
+    restart: unless-stopped
 
-volumes:
-  db_data:
-  sonarqube_data:
-  sonarqube_extensions:
-  sonarqube_logs:
-  zap_reports:
-  dependency_check_reports:
-  mobsf_data:
-  sqlmap_data:
-  pentest_python_data:
-  oasm_data:
+  # ── Pentest API (port 6100) ───────────────────────────────────────
+  pentest-python:
+    build: ./tool-wrappers/pentest
+    container_name: security-dashboard-pentest-python
+    networks: [asf-net]
+    # SECURITY: Internal only — no host port mapping
+    restart: unless-stopped
+
+  # ── OASM microservice (port 6200) ────────────────────────────────
+  oasm:
+    build: ./tool-wrappers/oasm
+    container_name: security-dashboard-oasm
+    networks: [asf-net]
+    cap_add: [NET_RAW, NET_ADMIN]
+    # SECURITY: Internal only — no host port mapping
+    restart: unless-stopped
+
+  # ── Nmap tool wrapper ─────────────────────────────────────────────
+  nmap:
+    build: ./tool-wrappers/nmap
+    container_name: security-dashboard-nmap
+    networks: [asf-net]
+    cap_add: [NET_RAW, NET_ADMIN]
+    restart: unless-stopped
+
+  # ── Nikto tool wrapper ────────────────────────────────────────────
+  nikto:
+    build: ./tool-wrappers/nikto
+    container_name: security-dashboard-nikto
+    networks: [asf-net]
+    restart: unless-stopped
+
+  # ── Container Scanning: Trivy ────────────────────────────────────
+  trivy:
+    image: aquasec/trivy:latest
+    container_name: security-dashboard-trivy
+    networks: [asf-net]
+    command: server --listen 0.0.0.0:8083
+    volumes:
+      - trivy_cache:/root/.cache/trivy
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  # ── Observability: Grafana ─────────────────────────────────â──
+  grafana:
+    image: grafana/grafana:latest
+    container_name: security-dashboard-grafana
+    networks: [asf-net]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${DB_ROOT_PASSWORD}  # Reuse generated secret
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+  sqlmap:
+    build: ./tool-wrappers/sqlmap
+    container_name: security-dashboard-sqlmap
+    networks: [asf-net]
+    restart: unless-stopped

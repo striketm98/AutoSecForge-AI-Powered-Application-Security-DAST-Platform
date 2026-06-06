@@ -1,876 +1,122 @@
 <?php
+// ─── AutoSecForge Pro v12 — Helpers ──────────────────────────────
+// Fixes: ASF-002 (SSRF), ASF-004 (file upload validation)
 
 declare(strict_types=1);
 
-if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_start();
-}
+// ─── ASF-002: SSRF protection ────────────────────────────────────
+// Block requests to private/loopback ranges and internal tool ports.
+// Only allow outbound HTTP from toolHealth() to known containers.
 
-function e(string $value): string
-{
-    return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
-}
+const ALLOWED_INTERNAL_HOSTS = [
+    'security-dashboard-sonarqube',
+    'security-dashboard-zap',
+    'security-dashboard-mobsf',
+    'autosecforge-mcp-hackstrike',
+    'autosecforge-openai-free-agents',
+    'security-dashboard-pentest-python',
+    'security-dashboard-oasm',
+    'security-dashboard-sqlmap',
+];
 
-function severityClass(string $severity): string
-{
-    return match ($severity) {
-        'critical' => 'sev-critical',
-        'high' => 'sev-high',
-        'medium' => 'sev-medium',
-        'low' => 'sev-low',
-        default => 'sev-info',
-    };
-}
+/**
+ * Safe internal HTTP GET — only to allow-listed hostnames.
+ * Blocks all IP-based targets (prevents SSRF to cloud metadata, etc.).
+ */
+function safe_internal_get(string $url, int $timeout = 5): array {
+    $parsed = parse_url($url);
+    $host   = $parsed['host'] ?? '';
 
-function findingStatusClass(string $status): string
-{
-    return match ($status) {
-        'false_positive' => 'tag-false-positive',
-        'accepted_risk' => 'tag-risk',
-        'resolved' => 'tag-resolved',
-        default => 'tag-open',
-    };
-}
+    // ASF-002: Reject IP addresses entirely
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        return ['error' => 'Direct IP targets are not permitted (SSRF prevention).'];
+    }
 
-function integrationStatusClass(string $status): string
-{
-    return match ($status) {
-        'ready' => 'tag-resolved',
-        'configured' => 'tag-risk',
-        default => 'tag-open',
-    };
-}
-
-function toolCategoryLabel(string $category): string
-{
-    return match ($category) {
-        'sast' => 'SAST',
-        'dast' => 'DAST',
-        'sca' => 'SCA',
-        'mobile' => 'Mobile',
-        'pentest' => 'Pentest',
-        'assistant' => 'Assistant',
-        default => 'Automation',
-    };
-}
-
-function cweCatalog(): array
-{
-    return [
-        'CWE-89' => 'SQL Injection',
-        'CWE-79' => 'Cross-Site Scripting',
-        'CWE-78' => 'OS Command Injection',
-        'CWE-22' => 'Path Traversal',
-        'CWE-306' => 'Missing Authentication',
-        'CWE-352' => 'CSRF',
-        'CWE-798' => 'Use of Hard-coded Credentials',
-        'CWE-200' => 'Information Exposure',
-    ];
-}
-
-function cweRemediation(string $cweId): string
-{
-    return match ($cweId) {
-        'CWE-89' => 'Use parameterized queries or prepared statements and validate all inputs.',
-        'CWE-79' => 'Encode output, validate input, and apply context-aware escaping.',
-        'CWE-78' => 'Avoid shell execution with untrusted input and use safe APIs.',
-        'CWE-22' => 'Normalize paths and enforce strict allow-lists for file access.',
-        'CWE-306' => 'Require authentication and verify access before protected actions.',
-        'CWE-352' => 'Add CSRF tokens and verify them on every state-changing request.',
-        'CWE-798' => 'Remove hard-coded credentials and load secrets from a secure store.',
-        'CWE-200' => 'Reduce exposure and verify that the disclosure is intentional and necessary.',
-        default => 'Review the code path, add defensive validation, and retest after remediation.',
-    };
-}
-
-function inferCweId(array $item, string $sourceName = ''): ?string
-{
-    foreach (['cwe_id', 'cwe', 'cweid'] as $key) {
-        if (!empty($item[$key])) {
-            $value = strtoupper(trim((string) $item[$key]));
-            return str_starts_with($value, 'CWE-') ? $value : ('CWE-' . preg_replace('/\D+/', '', $value));
+    // ASF-002: Reject private/loopback hostnames by resolving them
+    $resolved = gethostbyname($host);
+    if (is_private_ip($resolved)) {
+        // Exception: only allow-listed internal container names pass
+        if (!in_array($host, ALLOWED_INTERNAL_HOSTS, true)) {
+            return ['error' => "Host '{$host}' is not on the internal allow-list."];
         }
     }
 
-    $haystack = strtolower(
-        trim(
-            implode(' ', array_filter([
-                (string) ($item['title'] ?? ''),
-                (string) ($item['message'] ?? ''),
-                (string) ($item['description'] ?? ''),
-                (string) ($item['desc'] ?? ''),
-                (string) ($item['rule'] ?? ''),
-                (string) $sourceName,
-            ]))
-        )
-    );
-
-    return match (true) {
-        str_contains($haystack, 'sql injection') || str_contains($haystack, 'sqli') => 'CWE-89',
-        str_contains($haystack, 'cross-site scripting') || str_contains($haystack, ' xss') || str_contains($haystack, 'xss ') => 'CWE-79',
-        str_contains($haystack, 'command injection') || str_contains($haystack, 'shell') || str_contains($haystack, 'exec') => 'CWE-78',
-        str_contains($haystack, 'csrf') => 'CWE-352',
-        str_contains($haystack, 'path traversal') || str_contains($haystack, 'directory traversal') => 'CWE-22',
-        str_contains($haystack, 'authentication') => 'CWE-306',
-        str_contains($haystack, 'hard-coded') || str_contains($haystack, 'hardcoded') || str_contains($haystack, 'credential') => 'CWE-798',
-        str_contains($haystack, 'exposure') || str_contains($haystack, 'information') => 'CWE-200',
-        default => null,
-    };
-}
-
-function normalizeSeverityLabel(string $severity, string $sourceName = ''): string
-{
-    $value = strtolower(trim($severity));
-    return match ($value) {
-        'blocker', 'critical', 'error', 'high', 'severe' => 'critical',
-        'major', 'medium', 'warn', 'warning', 'moderate' => 'medium',
-        'minor', 'low', 'info', 'information', 'notice' => 'low',
-        default => str_contains(strtolower($sourceName), 'zap') ? 'medium' : 'low',
-    };
-}
-
-function normalizeFindingFromImport(array $item, string $sourceName, string $toolName, string $scanType): array
-{
-    $title = trim((string) ($item['title'] ?? $item['name'] ?? $item['alert'] ?? $item['message'] ?? $item['rule'] ?? 'Imported finding'));
-    $description = trim((string) ($item['description'] ?? $item['desc'] ?? $item['details'] ?? $item['message'] ?? $item['riskdesc'] ?? $title));
-    $recommendation = trim((string) ($item['solution'] ?? $item['remediation'] ?? $item['fix'] ?? $item['recommendation'] ?? ''));
-    $cweId = inferCweId($item, $sourceName);
-    $category = match ($scanType) {
-        'zap' => 'DAST',
-        'sca' => 'SCA',
-        'sonarqube' => 'SAST',
-        default => (str_contains(strtolower($sourceName), 'mobsf') ? 'Mobile' : 'SAST'),
-    };
-    $severity = normalizeSeverityLabel((string) ($item['severity'] ?? $item['risk'] ?? $item['priority'] ?? $item['level'] ?? ''), $sourceName);
-    $filePath = trim((string) ($item['file_path'] ?? $item['file'] ?? $item['component'] ?? $item['url'] ?? $item['path'] ?? ''));
-    $lineNumber = null;
-    foreach (['line', 'line_number', 'lineno', 'startline'] as $lineKey) {
-        if (isset($item[$lineKey]) && is_numeric($item[$lineKey])) {
-            $lineNumber = (int) $item[$lineKey];
-            break;
-        }
-    }
-
-    $issueSummary = trim((string) ($item['ai_issue_summary'] ?? $item['issue_summary'] ?? $item['summary'] ?? ''));
-    if ($issueSummary === '') {
-        $issueSummary = $title . ' detected from ' . $toolName . '.';
-    }
-
-    if ($recommendation === '') {
-        $recommendation = $cweId ? cweRemediation($cweId) : 'Review the affected code path and apply a safe, tested fix.';
-    }
-
-    $validationNotes = trim((string) ($item['validation_notes'] ?? $item['evidence'] ?? $item['evidence_notes'] ?? ''));
-    if ($validationNotes === '') {
-        $evidenceParts = array_filter([
-            trim((string) ($item['url'] ?? '')),
-            trim((string) ($item['param'] ?? '')),
-            trim((string) ($item['component'] ?? '')),
-            trim((string) ($item['file'] ?? '')),
-        ]);
-        $validationNotes = $evidenceParts ? ('Safe validation evidence: ' . implode(', ', $evidenceParts)) : 'Safe validation evidence only. No exploit steps are stored in the platform.';
-    }
-
-    return [
-        'severity' => $severity,
-        'status' => 'open',
-        'cwe_id' => $cweId,
-        'title' => $title,
-        'category' => $category,
-        'file_path' => $filePath !== '' ? $filePath : null,
-        'line_number' => $lineNumber,
-        'description' => $description,
-        'recommendation' => $recommendation,
-        'ai_issue_summary' => $issueSummary,
-        'ai_summary' => $issueSummary,
-        'ai_remediation' => $recommendation,
-        'validation_notes' => $validationNotes,
-        'ai_confidence' => isset($item['confidence']) && is_numeric($item['confidence']) ? min(100, max(0, (int) $item['confidence'])) : null,
-        'analyst_comment' => null,
-    ];
-}
-
-function importedFindingCandidates(array $payload): array
-{
-    foreach (['findings', 'issues', 'alerts', 'vulnerabilities', 'results'] as $key) {
-        if (!empty($payload[$key]) && is_array($payload[$key])) {
-            return array_values(array_filter($payload[$key], 'is_array'));
-        }
-    }
-
-    if (!empty($payload['data']) && is_array($payload['data'])) {
-        return array_values(array_filter($payload['data'], 'is_array'));
-    }
-
-    return [];
-}
-
-function normalizeImportedFindings(string $sourceName, string $toolName, string $scanType, array $payload): array
-{
-    $candidates = importedFindingCandidates($payload);
-    $findings = [];
-
-    foreach ($candidates as $candidate) {
-        $findings[] = normalizeFindingFromImport($candidate, $sourceName, $toolName, $scanType);
-    }
-
-    if (!$findings && !empty($payload)) {
-        $findings[] = normalizeFindingFromImport($payload, $sourceName, $toolName, $scanType);
-    }
-
-    return $findings;
-}
-
-function ingestImportedFindings(PDO $pdo, int $scanRunId, string $sourceName, string $toolName, string $scanType, array $payload): int
-{
-    $findings = normalizeImportedFindings($sourceName, $toolName, $scanType, $payload);
-    if (!$findings) {
-        return 0;
-    }
-
-    $stmt = $pdo->prepare('
-        INSERT INTO findings (
-            scan_run_id, severity, status, cwe_id, ai_issue_summary, ai_summary, ai_remediation,
-            validation_notes, ai_confidence, title, category, file_path, line_number, description,
-            recommendation, analyst_comment
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ');
-
-    $count = 0;
-    foreach ($findings as $finding) {
-        $stmt->execute([
-            $scanRunId,
-            $finding['severity'],
-            $finding['status'],
-            $finding['cwe_id'],
-            $finding['ai_issue_summary'],
-            $finding['ai_summary'],
-            $finding['ai_remediation'],
-            $finding['validation_notes'],
-            $finding['ai_confidence'],
-            $finding['title'],
-            $finding['category'],
-            $finding['file_path'],
-            $finding['line_number'],
-            $finding['description'],
-            $finding['recommendation'],
-            $finding['analyst_comment'],
-        ]);
-        $count++;
-    }
-
-    return $count;
-}
-
-function pentestPlaybook(): array
-{
-    return [
-        [
-            'title' => 'Authentication review',
-            'summary' => 'Validate login behavior, session expiry, and access control outcomes.',
-        ],
-        [
-            'title' => 'Input validation review',
-            'summary' => 'Check server-side validation, output encoding, and request handling.',
-        ],
-        [
-            'title' => 'Mobile configuration review',
-            'summary' => 'Confirm transport security, local storage, and API usage rules.',
-        ],
-        [
-            'title' => 'Dependency exposure review',
-            'summary' => 'Track advisory status, package versions, and remediation evidence.',
-        ],
-    ];
-}
-
-function agentRoster(): array
-{
-    return [
-        ['name' => 'Triage Agent', 'scope' => 'SAST + DAST + SCA', 'task' => 'Ranks findings, maps CWE, and flags false-positive candidates.'],
-        ['name' => 'Remediation Agent', 'scope' => 'Backend + frontend fixes', 'task' => 'Drafts safe remediation notes and retest criteria.'],
-        ['name' => 'Report Agent', 'scope' => 'Pro deliverables', 'task' => 'Builds executive, technical, SARIF, CSV, and client-ready summaries.'],
-    ];
-}
-
-function mcpFabricConnectors(): array
-{
-    return [
-        ['name' => 'SonarQube MCP', 'type' => 'SAST', 'status' => 'ready'],
-        ['name' => 'Semgrep MCP', 'type' => 'SAST', 'status' => 'available'],
-        ['name' => 'OWASP ZAP MCP', 'type' => 'DAST', 'status' => 'ready'],
-        ['name' => 'Trivy MCP', 'type' => 'Container', 'status' => 'available'],
-        ['name' => 'Dependency-Check MCP', 'type' => 'SCA', 'status' => 'ready'],
-        ['name' => 'Open ASM MCP', 'type' => 'OASM', 'status' => 'ready'],
-    ];
-}
-
-function pentestChecklist(): array
-{
-    return [
-        ['section' => 'Access control', 'items' => ['Login works as expected', 'Session expires on logout', 'Role restrictions enforced', 'Admin pages are protected']],
-        ['section' => 'Input handling', 'items' => ['Server-side validation is present', 'Output encoding is context-aware', 'File uploads are restricted', 'Error messages do not leak secrets']],
-        ['section' => 'Security headers', 'items' => ['HSTS enabled', 'CSP reviewed', 'X-Frame-Options or frame-ancestors set', 'Cookies use Secure and HttpOnly']],
-        ['section' => 'Mobile / API', 'items' => ['Transport security is enforced', 'Sensitive data is not stored locally', 'API auth is required', 'No excessive data in responses']],
-        ['section' => 'Evidence', 'items' => ['Screenshots captured', 'Validation notes stored', 'CWE mapped', 'Remediation confirmed after retest']],
-    ];
-}
-
-function oasmAssetSamples(): array
-{
-    return [
-        ['asset_type' => 'domain', 'asset_name' => 'client.example.com', 'asset_url' => 'https://client.example.com', 'exposure' => 'public', 'status' => 'reviewed', 'notes' => 'Primary portal under ongoing monitoring.'],
-        ['asset_type' => 'api', 'asset_name' => 'api.client.example.com', 'asset_url' => 'https://api.client.example.com', 'exposure' => 'public', 'status' => 'discovered', 'notes' => 'API surface queued for validation.'],
-        ['asset_type' => 'subdomain', 'asset_name' => 'dev.client.example.com', 'asset_url' => 'https://dev.client.example.com', 'exposure' => 'internal', 'status' => 'in_scope', 'notes' => 'Internal environment tracked for exposure control.'],
-        ['asset_type' => 'repo', 'asset_name' => 'github.com/acme/repo', 'asset_url' => 'https://github.com/acme/repo', 'exposure' => 'restricted', 'status' => 'out_of_scope', 'notes' => 'Reference only; not in current assessment.'],
-    ];
-}
-
-function toolHealth(string $endpointUrl): array
-{
-    $endpointUrl = trim($endpointUrl);
-    if ($endpointUrl === '') {
-        return ['status' => 'unknown', 'label' => 'Unknown', 'detail' => 'No endpoint configured'];
-    }
-
-    $healthUrl = rtrim($endpointUrl, '/') . '/health';
-    $context = stream_context_create([
-        'http' => [
-            'method' => 'GET',
-            'timeout' => 2,
-            'ignore_errors' => true,
-        ],
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => $timeout,
+        CURLOPT_FOLLOWLOCATION => false,   // Never follow redirects (SSRF)
+        CURLOPT_SSL_VERIFYPEER => false,   // Internal containers use self-signed certs
     ]);
+    $body = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err  = curl_error($ch);
+    curl_close($ch);
 
-    $body = @file_get_contents($healthUrl, false, $context);
-    if ($body === false) {
-        return ['status' => 'down', 'label' => 'Down', 'detail' => $healthUrl];
+    if ($err) {
+        return ['error' => $err];
     }
-
-    $decoded = json_decode($body, true);
-    if (is_array($decoded) && (($decoded['status'] ?? '') === 'ok' || ($decoded['status'] ?? '') === 'ready')) {
-        return ['status' => 'up', 'label' => 'Up', 'detail' => $healthUrl];
-    }
-
-    return ['status' => 'partial', 'label' => 'Partial', 'detail' => $healthUrl];
+    return ['status' => $code, 'body' => $body];
 }
 
-function ensureProRuntimeSchema(PDO $pdo, ?int $projectId = null): void
-{
-    try {
-        $pdo->exec("ALTER TABLE scan_jobs MODIFY scan_kind ENUM('sast','sca','dast','mobile','mcp','agent') NOT NULL");
-    } catch (Throwable $e) {
-        // Older demo databases may not be writable during startup; keep the UI usable.
-    }
+function is_private_ip(string $ip): bool {
+    return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
+}
 
-    if (!$projectId) {
-        try {
-            $projectId = (int) ($pdo->query('SELECT id FROM projects ORDER BY id DESC LIMIT 1')->fetchColumn() ?: 0);
-        } catch (Throwable $e) {
-            $projectId = 0;
-        }
-    }
-
-    if ($projectId <= 0) {
-        return;
-    }
-
-    $integrations = [
-        ['MCP HackStrike Fabric', 'AutoSecForge', 'mcp-hackstrike', 'automation', 'automation', 'api', 'ready', 'http://mcp-hackstrike:6300', 'http://mcp-hackstrike:6300', '/rpc', '/connectors', 'none', 'Local JSON-RPC connector fabric for SAST, DAST, SCA, container, and OASM routing.'],
-        ['OpenAI Free Agents', 'AutoSecForge', 'openai-free-agents', 'assistant', 'assistant', 'api', 'ready', 'http://openai-free-agents:6400', 'http://openai-free-agents:6400', '/v1/chat/completions', '/agents', 'none', 'OpenAI-compatible local agent endpoint for triage, remediation, and client report drafting.'],
+/**
+ * Tool health probe — uses allow-list above.
+ */
+function toolHealth(string $service): array {
+    $urls = [
+        'sonarqube' => 'http://security-dashboard-sonarqube:9000/api/system/ping',
+        'zap'       => 'http://security-dashboard-zap:8090/JSON/core/view/version/',
+        'mobsf'     => 'http://security-dashboard-mobsf:8000/api/v1/health',
+        'mcp'       => 'http://autosecforge-mcp-hackstrike:6300/health',
+        'ai'        => 'http://autosecforge-openai-free-agents:6400/health',
     ];
 
-    try {
-        $stmt = $pdo->prepare('
-            INSERT INTO integrations (
-                project_id, name, vendor_name, integration_profile, type, tool_category,
-                connection_type, status, endpoint_url, api_base_url, scan_submit_url,
-                result_url, auth_type, description
-            )
-            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            WHERE NOT EXISTS (
-                SELECT 1 FROM integrations WHERE project_id = ? AND integration_profile = ?
-            )
-        ');
-        foreach ($integrations as $integration) {
-            $stmt->execute([
-                $projectId,
-                $integration[0],
-                $integration[1],
-                $integration[2],
-                $integration[3],
-                $integration[4],
-                $integration[5],
-                $integration[6],
-                $integration[7],
-                $integration[8],
-                $integration[9],
-                $integration[10],
-                $integration[11],
-                $integration[12],
-                $projectId,
-                $integration[2],
-            ]);
-        }
-    } catch (Throwable $e) {
-        // The Add-ons page can still register these connectors manually.
+    if (!isset($urls[$service])) {
+        return ['error' => "Unknown service: {$service}"];
     }
+    return safe_internal_get($urls[$service]);
 }
 
-function findIntegrationForScan(array $integrations, string $scanKind): ?array
-{
-    $scanKind = strtolower(trim($scanKind));
-    $profiles = match ($scanKind) {
-        'sast' => ['sonarqube'],
-        'sca' => ['dependency-check', 'dependency_check'],
-        'dast' => ['zap'],
-        'mobile' => ['mobsf'],
-        'mcp' => ['mcp-hackstrike', 'mcp-hexstrike'],
-        'agent' => ['openai-free-agents', 'openai-agents', 'openchat'],
-        default => [],
-    };
-    $categories = match ($scanKind) {
-        'sast' => ['sast'],
-        'sca' => ['sca'],
-        'dast' => ['dast'],
-        'mobile' => ['mobile'],
-        'mcp' => ['automation'],
-        'agent' => ['assistant'],
-        default => [],
-    };
+// ─── ASF-004: File upload validation ─────────────────────────────
+const ALLOWED_EVIDENCE_MIME = [
+    'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+    'application/pdf', 'text/plain', 'text/csv',
+    'application/zip',
+];
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
 
-    foreach ($integrations as $integration) {
-        $profile = strtolower((string) ($integration['integration_profile'] ?? ''));
-        if ($profile !== '' && in_array($profile, $profiles, true)) {
-            return $integration;
-        }
+function validate_evidence_upload(array $file): ?string {
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return 'Upload error code: ' . $file['error'];
     }
-
-    foreach ($integrations as $integration) {
-        $category = strtolower((string) ($integration['tool_category'] ?? ''));
-        if ($category !== '' && in_array($category, $categories, true)) {
-            return $integration;
-        }
+    if ($file['size'] > MAX_UPLOAD_BYTES) {
+        return 'File exceeds 10 MB limit.';
     }
-
-    return null;
+    // ASF-004: Use finfo (magic bytes), not the browser-supplied MIME type
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime  = $finfo->file($file['tmp_name']);
+    if (!in_array($mime, ALLOWED_EVIDENCE_MIME, true)) {
+        return "File type '{$mime}' is not permitted.";
+    }
+    // ASF-004: Randomise filename to prevent directory traversal
+    $ext      = pathinfo($file['name'], PATHINFO_EXTENSION);
+    $safe_ext = preg_replace('/[^a-zA-Z0-9]/', '', $ext);
+    $filename = bin2hex(random_bytes(16)) . '.' . strtolower($safe_ext);
+    return null; // null = valid; caller uses $filename
 }
 
-function integrationBaseUrlForRuntime(array $integration, string $scanKind): string
-{
-    $scanKind = strtolower(trim($scanKind));
-    $base = trim((string) ($integration['api_base_url'] ?? $integration['endpoint_url'] ?? ''));
-    $connectionType = strtolower((string) ($integration['connection_type'] ?? ''));
-    $profile = strtolower((string) ($integration['integration_profile'] ?? ''));
-
-    $fallbackByProfile = [
-        'zap' => 'http://zap:8090',
-        'sonarqube' => 'http://sonarqube:9000',
-        'mobsf' => 'http://mobsf:8000',
-    ];
-    $fallbackByKind = [
-        'dast' => 'http://zap:8090',
-        'sast' => 'http://sonarqube:9000',
-        'mobile' => 'http://mobsf:8000',
-    ];
-
-    if ($connectionType === 'docker') {
-        $host = '';
-        if ($base !== '') {
-            $parsedHost = parse_url($base, PHP_URL_HOST);
-            $host = is_string($parsedHost) ? strtolower(trim($parsedHost)) : '';
-        }
-        if ($base === '' || $host === 'localhost' || $host === '127.0.0.1') {
-            $base = $fallbackByProfile[$profile] ?? ($fallbackByKind[$scanKind] ?? $base);
-        }
-    }
-
-    return rtrim($base, '/');
-}
-
-function triggerScanFromUi(PDO $pdo, int $projectId, string $scanKind, string $targetUrl, string $sourceUrl, array $integrations, array $sourceMeta = []): array
-{
-    $scanKind = strtolower(trim($scanKind));
-    $sourceMode = (string) ($sourceMeta['source_mode'] ?? ($sourceUrl !== '' ? 'url' : 'manual'));
-    $artifactPath = trim((string) ($sourceMeta['artifact_path'] ?? ''));
-    $scanType = match ($scanKind) {
-        'sast' => 'sonarqube',
-        'sca' => 'sca',
-        'dast' => 'zap',
-        'mobile' => 'sast',
-        'mcp', 'agent' => 'sast',
-        default => 'sast',
-    };
-    $toolLabel = match ($scanKind) {
-        'sast' => 'SAST',
-        'sca' => 'SCA',
-        'dast' => 'DAST',
-        'mobile' => 'Mobile APK',
-        'mcp' => 'MCP HackStrike',
-        'agent' => 'OpenAI Free Agents',
-        default => strtoupper($scanKind),
-    };
-    $integration = findIntegrationForScan($integrations, $scanKind);
-    $integrationId = !empty($integration['id']) ? (int) $integration['id'] : null;
-    $toolName = (string) ($integration['name'] ?? ($toolLabel . ' Connector'));
-    $actor = (string) (currentUser()['email'] ?? 'system');
-
-    $summary = sprintf(
-        '%s scan initiated from UI by %s. Target: %s. Source: %s',
-        $toolLabel,
-        $actor,
-        $targetUrl !== '' ? $targetUrl : 'n/a',
-        $sourceUrl !== '' ? $sourceUrl : ($artifactPath !== '' ? $artifactPath : 'n/a')
-    );
-
-    if (in_array($scanKind, ['sast', 'mobile'], true) && $sourceUrl === '' && $artifactPath === '') {
-        return [
-            'ok' => false,
-            'message' => $toolLabel . ' requires a GitHub/source URL or uploaded ZIP/APK file.',
-            'scan_run_id' => 0,
-            'job_id' => 0,
-        ];
-    }
-
-    $scanStmt = $pdo->prepare('INSERT INTO scan_runs (project_id, scan_type, tool_name, status, started_at, summary, raw_payload) VALUES (?, ?, ?, ?, NOW(), ?, ?)');
-    $scanStmt->execute([
-        $projectId,
-        $scanType,
-        $toolName,
-        'queued',
-        $summary,
-        json_encode([
-            'scan_kind' => $scanKind,
-            'target_url' => $targetUrl,
-            'source_url' => $sourceUrl,
-            'source_mode' => $sourceMode,
-            'artifact_path' => $artifactPath !== '' ? $artifactPath : null,
-        ], JSON_UNESCAPED_SLASHES),
-    ]);
-    $scanRunId = (int) $pdo->lastInsertId();
-
-    $requestPayload = [
-        'project_id' => $projectId,
-        'scan_run_id' => $scanRunId,
-        'scan_kind' => $scanKind,
-        'target_url' => $targetUrl,
-        'source_url' => $sourceUrl,
-        'source_mode' => $sourceMode,
-        'artifact_path' => $artifactPath !== '' ? $artifactPath : null,
-        'requested_by' => $actor,
-    ];
-
-    $jobStmt = $pdo->prepare('INSERT INTO scan_jobs (project_id, scan_run_id, integration_id, scan_kind, status, target_url, source_url, request_payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-    $jobStmt->execute([
-        $projectId,
-        $scanRunId,
-        $integrationId,
-        $scanKind,
-        'queued',
-        $targetUrl !== '' ? $targetUrl : null,
-        $sourceUrl !== '' ? $sourceUrl : null,
-        json_encode($requestPayload, JSON_UNESCAPED_SLASHES),
-    ]);
-    $jobId = (int) $pdo->lastInsertId();
-
-    if (!$integration) {
-        return [
-            'ok' => true,
-            'message' => $toolLabel . ' scan queued in UI. Add connector details in Add-ons to submit automatically.',
-            'scan_run_id' => $scanRunId,
-            'job_id' => $jobId,
-        ];
-    }
-
-    $base = integrationBaseUrlForRuntime($integration, $scanKind);
-    $submitPath = trim((string) ($integration['scan_submit_url'] ?? ''));
-    if ($base === '') {
-        return [
-            'ok' => true,
-            'message' => $toolLabel . ' scan queued. Connector endpoint is not configured yet.',
-            'scan_run_id' => $scanRunId,
-            'job_id' => $jobId,
-        ];
-    }
-
-    $submitUrl = $base;
-    $requestMethod = 'POST';
-    $requestBody = json_encode($requestPayload, JSON_UNESCAPED_SLASHES);
-    $requestHeader = "Content-Type: application/json\r\n";
-
-    if ($scanKind === 'mcp') {
-        $submitUrl = rtrim($base, '/') . '/rpc';
-        $requestBody = json_encode([
-            'jsonrpc' => '2.0',
-            'id' => (string) $jobId,
-            'method' => 'scan.plan',
-            'params' => $requestPayload,
-        ], JSON_UNESCAPED_SLASHES);
-    } elseif ($scanKind === 'agent') {
-        $submitUrl = rtrim($base, '/') . '/v1/chat/completions';
-        $requestBody = json_encode([
-            'model' => getenv('OPENAI_COMPAT_MODEL') ?: 'autosecforge-free-agents',
-            'messages' => [
-                ['role' => 'system', 'content' => 'You are an AutoSecForge security triage agent. Keep guidance safe and report-focused.'],
-                ['role' => 'user', 'content' => $summary],
-            ],
-        ], JSON_UNESCAPED_SLASHES);
-    } elseif ($scanKind === 'dast') {
-        $target = trim($targetUrl !== '' ? $targetUrl : $sourceUrl);
-        if ($target === '') {
-            return [
-                'ok' => true,
-                'message' => 'DAST scan queued. Set Target URL first so OWASP ZAP can start.',
-                'scan_run_id' => $scanRunId,
-                'job_id' => $jobId,
-            ];
-        }
-        $zapPath = '/JSON/ascan/action/scan/';
-        if ($submitPath !== '') {
-            $candidate = strtolower($submitPath);
-            if (str_contains($candidate, '/json/spider/action/scan/')) {
-                $zapPath = '/JSON/ascan/action/scan/';
-            } else {
-                $zapPath = $submitPath;
-            }
-        }
-        $submitUrl = rtrim($base, '/') . '/' . ltrim($zapPath, '/');
-        $separator = str_contains($submitUrl, '?') ? '&' : '?';
-        $submitUrl .= $separator . http_build_query([
-            'url' => $target,
-            'recurse' => 'true',
-            'inScopeOnly' => 'false',
-        ]);
-        $requestMethod = 'GET';
-        $requestBody = '';
-        $requestHeader = '';
-    } else {
-        if ($submitPath !== '') {
-            $submitUrl = rtrim($base, '/') . '/' . ltrim($submitPath, '/');
-        }
-    }
-
-    $context = stream_context_create([
-        'http' => [
-            'method' => $requestMethod,
-            'header' => $requestHeader,
-            'content' => $requestBody,
-            'timeout' => 8,
-            'ignore_errors' => true,
-        ],
-    ]);
-
-    $response = @file_get_contents($submitUrl, false, $context);
-    if ($response === false) {
-        $pdo->prepare('UPDATE scan_jobs SET status = ?, error_message = ? WHERE id = ?')
-            ->execute(['queued', 'Connector unreachable. Job is queued for manual execution.', $jobId]);
-        return [
-            'ok' => true,
-            'message' => $toolLabel . ' scan queued. Connector is unreachable right now.',
-            'scan_run_id' => $scanRunId,
-            'job_id' => $jobId,
-        ];
-    }
-
-    $decodedResponse = json_decode($response, true);
-    $responsePayload = is_array($decodedResponse)
-        ? $decodedResponse
-        : ['raw_response' => substr($response, 0, 4000)];
-
-    $pdo->prepare('UPDATE scan_jobs SET status = ?, response_payload = ? WHERE id = ?')
-        ->execute(['submitted', json_encode($responsePayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $jobId]);
-    $pdo->prepare('UPDATE scan_runs SET status = ?, summary = ? WHERE id = ?')
-        ->execute([
-            'running',
-            sprintf('%s scan submitted to %s and is now running.', $toolLabel, $toolName),
-            $scanRunId,
-        ]);
-
-    return [
-        'ok' => true,
-        'message' => $toolLabel . ' scan submitted successfully.',
-        'scan_run_id' => $scanRunId,
-        'job_id' => $jobId,
-    ];
-}
-
-function logOasmHistory(PDO $pdo, ?int $projectId, ?int $assetId, string $action, string $details): void
-{
-    if (!$projectId) {
-        return;
-    }
-
-    $actor = currentUser()['display_name'] ?? currentUser()['email'] ?? 'system';
-    $stmt = $pdo->prepare('INSERT INTO attack_surface_history (project_id, asset_id, action, actor, details) VALUES (?, ?, ?, ?, ?)');
-    $stmt->execute([
-        $projectId,
-        $assetId,
-        $action,
-        $actor,
-        $details !== '' ? $details : null,
-    ]);
-}
-
-function parseOasmAssetPayload(string $payload): array
-{
-    $decoded = json_decode($payload, true);
-    if (!is_array($decoded)) {
-        return [];
-    }
-
-    $records = [];
-    $items = [];
-    foreach (['assets', 'items', 'data'] as $key) {
-        if (!empty($decoded[$key]) && is_array($decoded[$key])) {
-            $items = array_values(array_filter($decoded[$key], 'is_array'));
-            break;
-        }
-    }
-
-    if (!$items && array_is_list($decoded)) {
-        $items = array_values(array_filter($decoded, 'is_array'));
-    }
-
-    foreach ($items ?: [$decoded] as $item) {
-        $records[] = [
-            'asset_type' => (string) ($item['asset_type'] ?? $item['type'] ?? 'url'),
-            'asset_name' => (string) ($item['asset_name'] ?? $item['name'] ?? $item['host'] ?? $item['url'] ?? 'Imported asset'),
-            'asset_url' => (string) ($item['asset_url'] ?? $item['url'] ?? ''),
-            'exposure' => (string) ($item['exposure'] ?? 'public'),
-            'status' => (string) ($item['status'] ?? 'discovered'),
-            'notes' => (string) ($item['notes'] ?? $item['description'] ?? 'Imported from JSON feed.'),
-        ];
-    }
-
-    return $records;
-}
-
-function appName(): string
-{
-    return getenv('APP_NAME') ?: 'cyber-Security';
-}
-
-function currentUser(): ?array
-{
-    return $_SESSION['user'] ?? null;
-}
-
-function currentUserRole(): string
-{
-    return (string) (currentUser()['role'] ?? 'guest');
-}
-
-function requireLogin(): void
-{
-    if (!currentUser()) {
-        header('Location: login.php');
-        exit;
-    }
-}
-
-function requireRole(array $roles): void
-{
-    requireLogin();
-    if (!in_array(currentUserRole(), $roles, true)) {
-        header('Location: index.php');
-        exit;
-    }
-}
-
-function loginAttempt(string $email, string $password, ?PDO $pdo): bool
-{
-    $hash = null;
-    if ($pdo) {
-        try {
-            $stmt = $pdo->prepare('SELECT email, display_name, password_sha256, role FROM users WHERE email = ? LIMIT 1');
-            $stmt->execute([$email]);
-            $hash = $stmt->fetch();
-        } catch (Throwable $e) {
-            $stmt = $pdo->prepare('SELECT email, display_name, password_sha256 FROM users WHERE email = ? LIMIT 1');
-            $stmt->execute([$email]);
-            $hash = $stmt->fetch();
-            if (is_array($hash)) {
-                $hash['role'] = 'admin';
-            }
-        }
-    }
-
-    if (!$hash) {
-        return false;
-    }
-
-    $candidate = hash('sha256', $password);
-    if (!hash_equals((string) $hash['password_sha256'], $candidate)) {
-        return false;
-    }
-
-    $_SESSION['user'] = [
-        'email' => $hash['email'],
-        'display_name' => $hash['display_name'],
-        'role' => (string) ($hash['role'] ?? 'guest'),
-    ];
-
-    return true;
-}
-
-function logoutUser(): void
-{
-    unset($_SESSION['user']);
-}
-
-function csrfToken(): string
-{
+// ─── CSRF token helpers ───────────────────────────────────────────
+function csrf_token(): string {
     if (empty($_SESSION['csrf_token'])) {
-        $_SESSION['csrf_token'] = bin2hex(random_bytes(16));
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
     }
-
-    return (string) $_SESSION['csrf_token'];
+    return $_SESSION['csrf_token'];
 }
 
-function verifyCsrfToken(?string $token): bool
-{
-    return isset($_SESSION['csrf_token']) && is_string($token) && hash_equals((string) $_SESSION['csrf_token'], $token);
-}
-
-function sampleDashboard(): array
-{
-    return [
-        'project' => [
-            'name' => 'Client Portal',
-            'client_name' => 'Acme Corporation',
-            'repository_url' => 'https://example.com/repo',
-            'target_url' => 'https://example.com/app',
-        ],
-        'metrics' => [
-            'open_findings' => 12,
-            'critical' => 1,
-            'high' => 3,
-            'medium' => 4,
-            'low' => 4,
-            'coverage' => 78,
-            'quality_gate' => 'Passed with warnings',
-        ],
-        'scan_runs' => [
-            ['tool_name' => 'SonarQube', 'scan_type' => 'sonarqube', 'status' => 'completed', 'summary' => 'Code quality profile uploaded from SonarQube.', 'completed_at' => '2026-04-05 14:12:00'],
-            ['tool_name' => 'OWASP ZAP', 'scan_type' => 'zap', 'status' => 'completed', 'summary' => 'DAST baseline run completed.', 'completed_at' => '2026-04-06 09:30:00'],
-            ['tool_name' => 'Dependency-Check', 'scan_type' => 'sca', 'status' => 'completed', 'summary' => 'Open-source dependency review completed.', 'completed_at' => '2026-04-07 18:20:00'],
-        ],
-        'integrations' => [
-            ['name' => 'MobSF', 'vendor_name' => 'MobSF', 'integration_profile' => 'mobsf', 'type' => 'scanner', 'tool_category' => 'mobile', 'connection_type' => 'docker', 'status' => 'ready', 'endpoint_url' => 'http://mobsf:8000', 'api_base_url' => 'http://mobsf:8000', 'scan_submit_url' => '/api/v1/scan', 'result_url' => '/api/v1/report', 'auth_type' => 'token', 'documentation_url' => 'https://github.com/MobSF/docs', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Mobile application static and dynamic analysis add-on.'],
-            ['name' => 'OASM Assistant', 'vendor_name' => 'cyber-Security', 'integration_profile' => 'oasm-assistant', 'type' => 'assistant', 'tool_category' => 'assistant', 'connection_type' => 'api', 'status' => 'configured', 'endpoint_url' => 'https://oasm.example.local', 'api_base_url' => 'https://oasm.example.local', 'scan_submit_url' => '/api/summary', 'result_url' => '/api/assets', 'auth_type' => 'bearer', 'documentation_url' => '', 'last_test_status' => 'unknown', 'last_test_detail' => 'No test result yet', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Intelligence assistant integration for threat triage and guidance.'],
-            ['name' => 'OWASP ZAP', 'vendor_name' => 'OWASP', 'integration_profile' => 'zap', 'type' => 'scanner', 'tool_category' => 'dast', 'connection_type' => 'docker', 'status' => 'ready', 'endpoint_url' => 'http://zap:8090', 'api_base_url' => 'http://zap:8090', 'scan_submit_url' => '/JSON/ascan/action/scan/', 'result_url' => '/JSON/core/view/alerts/', 'auth_type' => 'none', 'documentation_url' => 'https://www.zaproxy.org/docs/', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Dynamic application security testing engine for baseline and authenticated scans.'],
-            ['name' => 'SonarQube', 'vendor_name' => 'SonarSource', 'integration_profile' => 'sonarqube', 'type' => 'scanner', 'tool_category' => 'sast', 'connection_type' => 'docker', 'status' => 'ready', 'endpoint_url' => 'http://sonarqube:9000', 'api_base_url' => 'http://sonarqube:9000', 'scan_submit_url' => '/api/issues/search', 'result_url' => '/api/measures/component', 'auth_type' => 'token', 'documentation_url' => 'https://docs.sonarsource.com/', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Source-code quality and static analysis platform.'],
-            ['name' => 'Dependency-Check', 'vendor_name' => 'OWASP', 'integration_profile' => 'dependency-check', 'type' => 'scanner', 'tool_category' => 'sca', 'connection_type' => 'docker', 'status' => 'ready', 'endpoint_url' => 'http://localhost:3300', 'api_base_url' => 'http://localhost:3300', 'scan_submit_url' => '/api/report', 'result_url' => '/api/report', 'auth_type' => 'none', 'documentation_url' => 'https://jeremylong.github.io/DependencyCheck/', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Open-source dependency and vulnerability analysis.'],
-            ['name' => 'sqlmap', 'vendor_name' => 'sqlmap', 'integration_profile' => 'sqlmap', 'type' => 'scanner', 'tool_category' => 'pentest', 'connection_type' => 'python', 'status' => 'configured', 'endpoint_url' => 'http://localhost:6000', 'api_base_url' => 'http://localhost:6000', 'scan_submit_url' => '/run', 'result_url' => '/results', 'auth_type' => 'token', 'documentation_url' => 'https://sqlmap.org/', 'last_test_status' => 'unknown', 'last_test_detail' => 'No test result yet', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Authorized SQL injection testing container for controlled assessments.'],
-            ['name' => 'Python Pentest Suite', 'vendor_name' => 'cyber-Security', 'integration_profile' => 'python-pentest-suite', 'type' => 'automation', 'tool_category' => 'pentest', 'connection_type' => 'python', 'status' => 'ready', 'endpoint_url' => 'http://pentest-python:6100', 'api_base_url' => 'http://pentest-python:6100', 'scan_submit_url' => '/catalog', 'result_url' => '/summary', 'auth_type' => 'none', 'documentation_url' => '', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Python-based authorized validation companion for safe checks, evidence notes, and remediation planning.'],
-            ['name' => 'Open Attack Surface Management', 'vendor_name' => 'cyber-Security', 'integration_profile' => 'oasm', 'type' => 'assistant', 'tool_category' => 'assistant', 'connection_type' => 'api', 'status' => 'ready', 'endpoint_url' => 'http://oasm:6200', 'api_base_url' => 'http://oasm:6200', 'scan_submit_url' => '/assets', 'result_url' => '/summary', 'auth_type' => 'none', 'documentation_url' => '', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Attack-surface inventory and exposure tracking module for approved assets.'],
-            ['name' => 'MCP HackStrike Fabric', 'vendor_name' => 'AutoSecForge', 'integration_profile' => 'mcp-hackstrike', 'type' => 'automation', 'tool_category' => 'automation', 'connection_type' => 'api', 'status' => 'ready', 'endpoint_url' => 'http://mcp-hackstrike:6300', 'api_base_url' => 'http://mcp-hackstrike:6300', 'scan_submit_url' => '/rpc', 'result_url' => '/connectors', 'auth_type' => 'none', 'documentation_url' => '', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'Local JSON-RPC connector fabric for SAST, DAST, SCA, container, and OASM routing.'],
-            ['name' => 'OpenAI Free Agents', 'vendor_name' => 'AutoSecForge', 'integration_profile' => 'openai-free-agents', 'type' => 'assistant', 'tool_category' => 'assistant', 'connection_type' => 'api', 'status' => 'ready', 'endpoint_url' => 'http://openai-free-agents:6400', 'api_base_url' => 'http://openai-free-agents:6400', 'scan_submit_url' => '/v1/chat/completions', 'result_url' => '/agents', 'auth_type' => 'none', 'documentation_url' => '', 'last_test_status' => 'up', 'last_test_detail' => 'Demo endpoint reachable', 'tool_logo_path' => 'assets/img/cyber-logo.png', 'description' => 'OpenAI-compatible local agent endpoint for triage, remediation, and client report drafting.'],
-        ],
-        'findings' => [
-            ['id' => 1, 'severity' => 'critical', 'status' => 'open', 'claim_state' => 'unclaimed', 'claimed_by' => null, 'claimed_at' => null, 'cwe_id' => 'CWE-78', 'analyst_comment' => '', 'ai_issue_summary' => 'Likely command injection path with direct process execution.', 'ai_summary' => 'Likely command injection path with direct process execution.', 'ai_remediation' => 'Remove the evaluator and replace it with a safe parser.', 'validation_notes' => 'Validate with unit tests and safe input cases only. Do not store exploit steps.', 'ai_confidence' => 91, 'title' => 'Remote code execution pattern', 'category' => 'SAST', 'file_path' => 'app/services/parser.php', 'line_number' => 131, 'description' => 'Untrusted content is passed into a dynamic evaluator.', 'recommendation' => 'Remove the evaluator and replace it with a safe parser.'],
-            ['id' => 2, 'severity' => 'high', 'status' => 'open', 'claim_state' => 'unclaimed', 'claimed_by' => null, 'claimed_at' => null, 'cwe_id' => 'CWE-352', 'analyst_comment' => '', 'ai_issue_summary' => 'Missing anti-forgery controls on a state-changing form.', 'ai_summary' => 'Missing anti-forgery controls on a state-changing form.', 'ai_remediation' => 'Add a CSRF token and verify it server-side.', 'validation_notes' => 'Confirm token rejection on missing and stale submissions.', 'ai_confidence' => 88, 'title' => 'Missing CSRF protection', 'category' => 'DAST', 'file_path' => 'views/profile.php', 'line_number' => 42, 'description' => 'State-changing form does not include a CSRF token.', 'recommendation' => 'Add a CSRF token and verify it server-side.'],
-            ['id' => 3, 'severity' => 'medium', 'status' => 'false_positive', 'claim_state' => 'unclaimed', 'claimed_by' => null, 'claimed_at' => null, 'cwe_id' => 'CWE-200', 'analyst_comment' => 'Vendor package risk is under review and appears informational.', 'ai_issue_summary' => 'External package risk appears informational and should be manually confirmed.', 'ai_summary' => 'External package risk appears informational and should be manually confirmed.', 'ai_remediation' => 'Upgrade to a patched version and re-run dependency analysis.', 'validation_notes' => 'Check upstream advisories and package changelog before closing.', 'ai_confidence' => 74, 'title' => 'Outdated dependency', 'category' => 'SCA', 'file_path' => 'composer.lock', 'line_number' => null, 'description' => 'A third-party package includes a known medium-risk vulnerability.', 'recommendation' => 'Upgrade to a patched version and re-run dependency analysis.'],
-        ],
-    ];
+function verify_csrf(string $token): bool {
+    return hash_equals($_SESSION['csrf_token'] ?? '', $token);
 }
