@@ -117,6 +117,11 @@ services:
   mcp-router:
     build: ./mcp-server
     container_name: autosecforge-mcp-router
+    # The orchestrator must read the Docker socket to exec into scanner
+    # containers. The socket is owned root:docker (mode 660) and the image's
+    # non-root `mcp` user can't read it, so run this service as root.
+    # (Socket access is already root-equivalent — no extra privilege gained.)
+    user: root
     expose:
       - "6300"
     environment:
