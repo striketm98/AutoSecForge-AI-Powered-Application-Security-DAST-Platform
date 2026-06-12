@@ -9,34 +9,25 @@
 
 Options -Indexes
 
-# Block .env and hidden files from web access
+# Apache 2.4 access control (Require) only — never mix with 2.2-era
+# Order/Deny/Allow here; combining both systems yields blanket 403s.
+
+# Block .env and hidden/sensitive files from web access
 <FilesMatch "(^\.env|\.env\.|\.htpasswd|\.git)">
-    Order Deny,Allow
-    Deny from all
+    Require all denied
 </FilesMatch>
 
 # Block all PHP by default
 <FilesMatch "\.(php|phtml)$">
-    Order Deny,Allow
-    Deny from all
+    Require all denied
 </FilesMatch>
 
 # Allow known public pages
 <FilesMatch "^(index|login|home|dashboard|logout|change_password|scan_trigger|scan_jobs|report|clients|checklist|audit|addons|settings|review|deliverables|oasm|export|import)\.php$">
-    Order Allow,Deny
-    Allow from all
+    Require all granted
 </FilesMatch>
 
 # Allow API endpoints
 <FilesMatch "^(stats|recent_scans|trigger_scan|ai_analyze|findings)\.php$">
-    Order Allow,Deny
-    Allow from all
+    Require all granted
 </FilesMatch>
-
-# mod_rewrite for clean URLs (optional)
-<IfModule mod_rewrite.c>
-    RewriteEngine On
-    RewriteBase /
-    RewriteCond %{REQUEST_FILENAME} !-f
-    RewriteCond %{REQUEST_FILENAME} !-d
-</IfModule>
