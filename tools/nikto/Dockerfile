@@ -1,1 +1,0 @@
-FROM alpine:3.19 RUN apk add --no-cache perl ca-certificates git perl-net-ssleay \ && git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto \ && ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto \ && chmod +x /usr/local/bin/nikto \ && apk del git HEALTHCHECK CMD nikto -Version || exit 1 CMD ["sleep", "infinity"]
