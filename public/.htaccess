@@ -5,6 +5,13 @@
     Header always set Referrer-Policy "strict-origin-when-cross-origin"
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
     Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+
+    # CSP lives here (volume-mounted → changes apply without image rebuild)
+    # and overrides any policy baked into the vhost. Allowed CDNs are exactly
+    # what the UI loads: jsdelivr (Bootstrap/AdminLTE/jQuery/Chart.js),
+    # cdnjs (Font Awesome), Google Fonts (Inter).
+    Header always unset Content-Security-Policy
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.googleapis.com; img-src 'self' data:; connect-src 'self'; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;"
 </IfModule>
 
 Options -Indexes
