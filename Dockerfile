@@ -19,11 +19,13 @@ RUN apt-get update && apt-get install -y \
 # Enable required Apache modules (ssl + rewrite + headers)
 RUN a2enmod rewrite headers ssl
 
-# Copy application files
+# Copy application files.
+# Note: .env is NOT baked into the image — it's git-ignored (may not exist in
+# the build context) and secrets don't belong in image layers. At runtime the
+# compose volume mount of ./public provides /var/www/html/.env (public/.env).
 COPY public/ /var/www/html/
 COPY src/    /var/www/src/
 COPY views/  /var/www/views/
-COPY .env    /var/www/html/.env
 
 # ── Domain-locked HTTPS vhost ─────────────────────────────────────
 # Self-signed cert for autosecforge.com (replace with a real cert in prod).
