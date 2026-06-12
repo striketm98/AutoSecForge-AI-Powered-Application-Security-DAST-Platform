@@ -45,7 +45,7 @@ AutoSecForge is a self-hosted security operations dashboard that orchestrates in
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│  Browser → http://localhost:8080                                   │
+│  Browser → https://autosecforge.com   (HTTPS only · IP access 403) │
 └───────────────┬────────────────────────────────────────────────────┘
                 │
         ┌───────▼────────┐        ┌──────────────┐
@@ -65,8 +65,8 @@ AutoSecForge is a self-hosted security operations dashboard that orchestrates in
         │  compatible API)    │        └─────────────────┘
         └─────────────────────┘
 
-  Side services: ZAP :8091 · SonarQube :9000 · MobSF :8000
-                 Trivy :8081 · OASM :6200 · SQLMap API :6000
+  Internal-only services (no host port): ZAP · SonarQube · MobSF
+                 Trivy · OASM · SQLMap · nmap · nikto
 ```
 
 **Security-review data flow:**
@@ -74,21 +74,34 @@ AutoSecForge is a self-hosted security operations dashboard that orchestrates in
 
 ---
 
-## Service & Port Reference
+## Access Model & Ports
 
-| Service | Container | Host Port | Purpose |
-|---|---|---|---|
-| Dashboard (PHP/Apache) | `autosecforge-app` | **8080** | Web UI |
-| MySQL 8.4 | `autosecforge-db` | 3306 | Persistence |
-| Ollama | `autosecforge-ollama` | 11434 | Local LLM inference |
-| AI Agent (Flask) | `autosecforge-ai-agent` | 6400 | Triage + OpenAI-compatible API |
-| MCP Router (Node) | `autosecforge-mcp-router` | 6300 | Scan orchestration |
-| OASM | `autosecforge-oasm` | 6200 | Attack-surface mapping |
-| OWASP ZAP | `autosecforge-zap` | 8091 | DAST proxy/daemon |
-| SonarQube CE | `autosecforge-sonarqube` | 9000 | SAST |
-| MobSF | `autosecforge-mobsf` | 8000 | Mobile app security |
-| Trivy server | `autosecforge-trivy` | 8081 | Container/SCA scanning |
-| SQLMap API | `autosecforge-sqlmap` | 6000 | SQL injection testing |
+AutoSecForge is **locked down by default**:
+
+- **Only the dashboard is reachable from the host**, and only over **HTTPS via `https://autosecforge.com`**.
+- The app's ports are **bound to `127.0.0.1`** — it is *not* reachable by raw IP or from the LAN.
+- Apache **rejects any request whose `Host` header is not `autosecforge.com`** (raw-IP access returns `403 Forbidden`), and plain HTTP is 301-redirected to HTTPS.
+- **Every other service has no host port at all** — MySQL, Ollama, the AI agent, the MCP router, and all scanner tools are exposed *only* on the internal `asf-net` Docker network for service-to-service traffic.
+
+| Service | Container | Host-reachable? | Internal port | Purpose |
+|---|---|---|---|---|
+| Dashboard (PHP/Apache) | `autosecforge-app` | ✅ `127.0.0.1:443` (HTTPS) + `:80` redirect | 443 / 80 | Web UI — domain only |
+| MySQL 8.4 | `autosecforge-db` | ❌ internal only | 3306 | Persistence |
+| Ollama | `autosecforge-ollama` | ❌ internal only | 11434 | Local LLM inference |
+| AI Agent (Flask) | `autosecforge-ai-agent` | ❌ internal only | 6400 | Triage + OpenAI-compatible API |
+| MCP Router (Node) | `autosecforge-mcp-router` | ❌ internal only | 6300 | Scan orchestration |
+| nmap | `autosecforge-nmap` | ❌ internal only | — | Network scanning (exec target) |
+| nikto | `autosecforge-nikto` | ❌ internal only | — | Web scanning (exec target) |
+| SQLMap | `autosecforge-sqlmap` | ❌ internal only | — | SQL injection (exec target) |
+| OASM | `autosecforge-oasm` | ❌ internal only | 6200 | Attack-surface mapping |
+| OWASP ZAP | `autosecforge-zap` | ❌ internal only | 8090 | DAST daemon |
+| SonarQube CE | `autosecforge-sonarqube` | ❌ internal only | 9000 | SAST |
+| MobSF | `autosecforge-mobsf` | ❌ internal only | 8000 | Mobile app security |
+| Trivy server | `autosecforge-trivy` | ❌ internal only | 8081 | Container/SCA scanning |
+
+> **Need a tool's web UI (e.g. SonarQube) during setup?** Don't publish its port. Tunnel it locally instead:
+> `docker compose exec sonarqube true` then reach it from another container, or temporarily run
+> `ssh -L 9000:localhost:9000` style forwarding — never add a public `ports:` mapping in production.
 
 ---
 
@@ -182,6 +195,22 @@ nano public/.env     # change DB_PASSWORD, DB_ROOT_PASSWORD, ZAP_API_KEY
 
 > The `.env` files are git-ignored — secrets never enter version control.
 
+### Step 5b — Map the domain (required — access is domain-only)
+
+The app only answers to `https://autosecforge.com`. Point that name at your machine:
+
+```bash
+# Linux / Kali / macOS:
+echo "127.0.0.1 autosecforge.com" | sudo tee -a /etc/hosts
+```
+
+```powershell
+# Windows (PowerShell as Administrator):
+Add-Content -Path "$env:WINDIR\System32\drivers\etc\hosts" -Value "`n127.0.0.1 autosecforge.com"
+```
+
+> Accessing by IP (`https://127.0.0.1`) is intentionally blocked with `403 Forbidden`.
+
 ### Step 6 — Build and launch the stack
 
 ```bash
@@ -199,10 +228,13 @@ docker exec autosecforge-ollama ollama pull llama3
 
 ### Step 8 — Open the dashboard
 
-Browse to **http://localhost:8080** and log in:
+Browse to **https://autosecforge.com** and log in. The image ships a **self-signed
+certificate**, so your browser will warn once — accept it (or install a real cert,
+see [Security Hardening](#security-hardening-notes)).
 
 | | |
 |---|---|
+| URL | `https://autosecforge.com` |
 | Email | `admin@autosecforge.local` |
 | Password | `Admin@123` |
 
@@ -228,15 +260,15 @@ Run pulls inside the container: `docker exec autosecforge-ollama ollama pull <mo
 
 **GPU acceleration (NVIDIA):** install `nvidia-container-toolkit` in Kali, then uncomment the `deploy.resources` GPU stanza under the `ollama` service in [docker-compose.yml](docker-compose.yml) and `docker compose up -d ollama`.
 
-**Verify the AI pipeline:**
+**Verify the AI pipeline** (services are internal-only, so check from inside the network):
 
 ```bash
-curl http://localhost:11434/api/tags          # Ollama: lists installed models
-curl http://localhost:6400/health             # AI agent: {"status":"ok",...}
-curl http://localhost:6300/health             # MCP router: {"status":"ok",...}
+docker exec autosecforge-ollama ollama list                              # installed models
+docker exec autosecforge-mcp-router wget -qO- http://ai-agent:6400/health # {"status":"ok",...}
+docker exec autosecforge-mcp-router wget -qO- http://localhost:6300/health# {"status":"ok",...}
 ```
 
-The AI agent also exposes an **OpenAI-compatible endpoint** at `http://localhost:6400/v1/chat/completions`, so any OpenAI-SDK tool can point at it with a dummy API key.
+The AI agent also exposes an **OpenAI-compatible endpoint** at `http://ai-agent:6400/v1/chat/completions` *on the internal network*, so any containerized OpenAI-SDK tool can point at it with a dummy API key. It is deliberately not published to the host.
 
 ---
 
@@ -306,14 +338,17 @@ Six roles control navigation, data visibility, and actions:
 
 | Symptom | Fix |
 |---|---|
-| `localhost:8080` unreachable | `docker compose ps` — if `app` is restarting, check `docker compose logs app`. On WSL2 without Docker Desktop, access via the WSL IP (`hostname -I`) if localhost forwarding is off. |
+| `autosecforge.com` won't resolve | Add the hosts entry from [Step 5b](#step-5b--map-the-domain-required--access-is-domain-only). On WSL2 the browser usually runs on Windows — edit the **Windows** hosts file, not Kali's. |
+| Browser shows `403 Forbidden` | You're hitting it by IP or wrong hostname — access is domain-locked. Use `https://autosecforge.com` exactly. |
+| Certificate warning | Expected — the bundled cert is self-signed. Accept it once, or install a CA-signed cert (see Hardening). |
+| Dashboard unreachable at the domain | `docker compose ps` — if `app` is restarting, check `docker compose logs app`. Confirm the hosts entry maps to `127.0.0.1`. |
 | Login fails with DB error | DB may still be initializing — wait for `db` to report *healthy*. To rebuild the schema: `docker compose down -v && docker compose up -d` (**destroys data**). |
 | AI analysis says "triage unavailable" | Model not pulled: `docker exec autosecforge-ollama ollama pull llama3`. Confirm with `curl localhost:11434/api/tags`. |
 | AI responses extremely slow | CPU inference is slow for big models — switch to `phi3:mini`/`mistral`, or enable the GPU stanza. |
 | Scans return "Invalid or private target" | Working as intended — SSRF guard blocks internal ranges. Test against a host you're authorized to scan (e.g., `scanme.nmap.org`). |
-| MCP router can't reach tool containers | It needs the Docker socket: confirm `/var/run/docker.sock` is mounted and tool containers (`autosecforge-nmap`, `-nikto`, `-sqlmap`) are running. |
+| MCP router can't reach tool containers | It needs the Docker socket: confirm `/var/run/docker.sock` is mounted and tool containers (`autosecforge-nmap`, `-nikto`, `-sqlmap`) are **Up** (`docker compose ps`). |
 | SonarQube exits with `vm.max_map_count` error | `sudo sysctl -w vm.max_map_count=262144` (persist in `/etc/sysctl.conf`). |
-| Port conflict on 8080/9000/8000 | Edit the host-side port in [docker-compose.yml](docker-compose.yml) (e.g., `"8088:80"`). |
+| Port 80/443 already in use on host | Another web server owns it — stop it, or change the loopback host port in [docker-compose.yml](docker-compose.yml) (e.g., `"127.0.0.1:8443:443"`) and browse `https://autosecforge.com:8443`. |
 | WSL clock drift breaks TLS/apt | `sudo hwclock -s` or restart WSL (`wsl --shutdown`). |
 
 Logs for any service: `docker compose logs -f <service>` (e.g., `app`, `mcp-router`, `ai-agent`, `ollama`).
@@ -325,11 +360,12 @@ Logs for any service: `docker compose logs -f <service>` (e.g., `app`, `mcp-rout
 Before any non-lab deployment:
 
 1. **Rotate every default credential** — admin password, `DB_PASSWORD`, `DB_ROOT_PASSWORD`, `ZAP_API_KEY`.
-2. **Don't expose service ports publicly.** Bind to localhost (`127.0.0.1:8080:80`) and front the app with a reverse proxy + TLS (certs in `ssl/`).
-3. The MCP router mounts the **Docker socket (read-only)** to exec into tool containers — treat that container as privileged and never expose port 6300 beyond the compose network.
-4. `.htaccess` already denies `.env`/`.git`, sets security headers, and default-denies PHP outside the allow-list — keep it intact if you change the web root.
-5. SSRF guards exist at both PHP and Node layers; don't relax the private-IP filters.
-6. Review `audit_log` regularly; the auditor role exists for exactly this.
+2. **Access is already domain-locked and loopback-bound.** App ports bind to `127.0.0.1` only and Apache 403s any non-`autosecforge.com` Host — keep it that way. Only the app is host-reachable; every other service is internal to `asf-net`.
+3. **Replace the self-signed certificate.** The image generates a self-signed cert at `/etc/ssl/asf/`. For real use, mount a CA-signed cert/key over those paths (e.g. add a volume `./ssl/autosecforge.crt:/etc/ssl/asf/autosecforge.crt:ro`) or terminate TLS at a reverse proxy.
+4. The MCP router mounts the **Docker socket (read-only)** to exec into tool containers — treat that container as privileged; it has no host port and must stay that way.
+5. `.htaccess` already denies `.env`/`.git`, sets security headers, and default-denies PHP outside the allow-list — keep it intact if you change the web root.
+6. SSRF guards exist at both PHP and Node layers; don't relax the private-IP filters.
+7. Review `audit_log` regularly; the auditor role exists for exactly this.
 
 ---
 
