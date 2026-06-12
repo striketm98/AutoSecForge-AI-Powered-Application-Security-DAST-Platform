@@ -1,29 +1,24 @@
 <?php
-
-declare(strict_types=1);
-
-require_once __DIR__ . '/Database.php';
-require_once __DIR__ . '/helpers.php';
-
-function authenticateFromRequest(): void
-{
-    $pdo = Database::pdo();
-    $email = trim((string) ($_POST['email'] ?? ''));
-    $password = (string) ($_POST['password'] ?? '');
-    $token = (string) ($_POST['csrf_token'] ?? '');
-
-    if (!verifyCsrfToken($token)) {
-        $_SESSION['auth_error'] = 'Your session expired. Please try again.';
-        header('Location: login.php');
-        exit;
-    }
-
-    if ($email === '' || $password === '' || !loginAttempt($email, $password, $pdo)) {
-        $_SESSION['auth_error'] = 'Invalid email or password.';
-        header('Location: login.php');
-        exit;
-    }
-
-    header('Location: home.php');
-    exit;
+if (session_status() === PHP_SESSION_NONE) {
+    ini_set('session.cookie_httponly', 1);
+    ini_set('session.cookie_samesite', 'Strict');
+    ini_set('session.use_strict_mode', 1);
+    session_start();
 }
+require_once 'Database.php';
+function authenticateUser($email, $password) {
+    $db = Database::getInstance();
+    $stmt = $db->prepare("SELECT id, full_name, email, password, role FROM users WHERE email = ?");
+    $stmt->execute([$email]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($user && password_verify($password, $user['password'])) {
+        $_SESSION['user_id'] = $user['id'];
+        $_SESSION['user_name'] = $user['full_name'];
+        $_SESSION['user_email'] = $user['email'];
+        $_SESSION['user_role'] = $user['role'];
+        return true;
+    }
+    return false;
+}
+function require_auth() { if (empty($_SESSION['user_id'])) { header('Location: login.php'); exit; } }
+?>

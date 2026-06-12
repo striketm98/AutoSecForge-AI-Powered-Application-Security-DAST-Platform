@@ -1,125 +1,108 @@
--- ============================================================
--- AutoSecForge – database/schema.sql  (SECURITY-HARDENED)
---
--- ASF-007 FIX: password column renamed from password_sha256
---   (CHAR 64) to password_hash (VARCHAR 255) to accommodate
---   Argon2ID hashes.
---
--- ASF-008 FIX: Default seed data no longer contains plain-text
---   credentials, password hints, or a pre-seeded admin account
---   with a known password.  A one-time setup script (setup.php)
---   prompts the operator for a strong password on first run and
---   stores it as an Argon2ID hash.
---
--- ASF-009 FIX: Added foreign key constraints to enforce referential
---   integrity and prevent orphaned records. Cascading deletes ensure
---   data consistency when parent records are removed.
--- ============================================================
+-- AutoSecForge Pro v12.1 – Full Schema
+-- Run: docker exec -i autosecforge-db-1 mysql -u dashboard -pChangeMe123 security_dashboard < database/schema.sql
 
-CREATE DATABASE IF NOT EXISTS security_dashboard
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE security_dashboard;
+SET NAMES utf8mb4;
+SET foreign_key_checks = 0;
 
--- ---- Users --------------------------------------------------
+-- ── Users ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
-    id            INT UNSIGNED    NOT NULL AUTO_INCREMENT,
-    email         VARCHAR(255)    NOT NULL,
-    -- ASF-007 FIX: VARCHAR(255) stores Argon2ID hashes; was CHAR(64)
-    password_hash VARCHAR(255)    NOT NULL,
-    role          ENUM('admin','manager','analyst') NOT NULL DEFAULT 'analyst',
-    created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_users_email (email)
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    full_name  VARCHAR(100) NOT NULL,
+    email      VARCHAR(255) UNIQUE NOT NULL,
+    password   VARCHAR(255) NOT NULL,
+    role       ENUM('admin','manager','analyst','client','auditor','executive') DEFAULT 'analyst',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ASF-008 FIX: No pre-seeded admin row with a known or hinted
--- password.  Run setup.php on first deployment to create the
--- initial admin account.
+-- Default admin (password: Admin@123 – change immediately)
+INSERT IGNORE INTO users (full_name, email, password, role)
+VALUES ('Administrator', 'admin@autosecforge.local',
+        '$2y$12$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'admin');
 
--- ---- Projects -----------------------------------------------
+-- ── Projects ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS projects (
-    id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    name        VARCHAR(255) NOT NULL,
-    description TEXT,
-    created_by  INT UNSIGNED NOT NULL,
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    CONSTRAINT fk_projects_created_by FOREIGN KEY (created_by) 
-        REFERENCES users(id) ON DELETE RESTRICT
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    name       VARCHAR(255) NOT NULL,
+    client_id  INT,
+    created_by INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (client_id)  REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ---- Project membership (for ASF-003 IDOR fix) --------------
+-- ── Project members ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS project_members (
-    project_id  INT UNSIGNED NOT NULL,
-    user_id     INT UNSIGNED NOT NULL,
-    role        ENUM('owner','member','viewer') NOT NULL DEFAULT 'member',
-    PRIMARY KEY (project_id, user_id),
-    CONSTRAINT fk_project_members_project_id FOREIGN KEY (project_id) 
-        REFERENCES projects(id) ON DELETE CASCADE,
-    CONSTRAINT fk_project_members_user_id FOREIGN KEY (user_id) 
-        REFERENCES users(id) ON DELETE CASCADE
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    project_id INT NOT NULL,
+    user_id    INT NOT NULL,
+    role       ENUM('owner','member','viewer') NOT NULL DEFAULT 'member',
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
+    UNIQUE KEY unique_member (project_id, user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ---- Scan runs ----------------------------------------------
-CREATE TABLE IF NOT EXISTS scan_runs (
-    id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    project_id  INT UNSIGNED NOT NULL,
-    scan_type   ENUM('DAST','SAST','SCA','Mobile') NOT NULL,
-    status      ENUM('pending','running','completed','failed') NOT NULL DEFAULT 'pending',
-    started_at  DATETIME,
-    finished_at DATETIME,
-    created_by  INT UNSIGNED NOT NULL,
-    PRIMARY KEY (id),
-    KEY idx_scan_runs_project (project_id),
-    CONSTRAINT fk_scan_runs_project_id FOREIGN KEY (project_id) 
-        REFERENCES projects(id) ON DELETE CASCADE,
-    CONSTRAINT fk_scan_runs_created_by FOREIGN KEY (created_by) 
-        REFERENCES users(id) ON DELETE RESTRICT
+-- ── Scan jobs ──────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS scan_jobs (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    target       VARCHAR(255)  NOT NULL,
+    scan_types   VARCHAR(100)  NOT NULL DEFAULT 'network',
+    raw_output   MEDIUMTEXT,
+    analysis     MEDIUMTEXT,
+    model        VARCHAR(100),
+    triggered_by INT,
+    status       ENUM('completed','partial','failed') DEFAULT 'completed',
+    project_id   INT,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (triggered_by) REFERENCES users(id)    ON DELETE SET NULL,
+    FOREIGN KEY (project_id)   REFERENCES projects(id) ON DELETE SET NULL,
+    INDEX idx_status (status),
+    INDEX idx_created (created_at),
+    INDEX idx_target  (target(64))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ---- Findings -----------------------------------------------
+-- ── Findings ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS findings (
-    id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    scan_run_id  INT UNSIGNED NOT NULL,
-    title        VARCHAR(512) NOT NULL,
-    severity     ENUM('Critical','High','Medium','Low','Info') NOT NULL,
-    status       ENUM('open','false_positive','accepted_risk','resolved','escalated')
-                 NOT NULL DEFAULT 'open',
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    scan_job_id  INT,
+    title        VARCHAR(500) NOT NULL,
     description  TEXT,
+    severity     ENUM('critical','high','medium','low','info') DEFAULT 'medium',
+    cvss_score   DECIMAL(3,1),
+    cwe_id       VARCHAR(20),
+    cve_id       VARCHAR(30),
+    affected_url VARCHAR(1000),
     remediation  TEXT,
-    cwe          VARCHAR(20),
-    cvss         DECIMAL(4,1),
-    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    KEY idx_findings_scan_run (scan_run_id),
-    CONSTRAINT fk_findings_scan_run_id FOREIGN KEY (scan_run_id) 
-        REFERENCES scan_runs(id) ON DELETE CASCADE
+    status       ENUM('open','in_progress','resolved','wont_fix') DEFAULT 'open',
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (scan_job_id) REFERENCES scan_jobs(id) ON DELETE CASCADE,
+    INDEX idx_severity (severity),
+    INDEX idx_status   (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ---- Clients ------------------------------------------------
+-- ── Audit log ──────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    user_id    INT,
+    action     VARCHAR(200) NOT NULL,
+    detail     TEXT,
+    ip_address VARCHAR(45),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    INDEX idx_user   (user_id),
+    INDEX idx_action (action(50))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── Clients (extended user view for client role) ───────────────────
 CREATE TABLE IF NOT EXISTS clients (
-    id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    name           VARCHAR(255) NOT NULL,
-    -- ASF-004 FIX: stores only the random filename, never the full path
-    logo_filename  VARCHAR(255),
-    created_by     INT UNSIGNED NOT NULL,
-    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    CONSTRAINT fk_clients_created_by FOREIGN KEY (created_by) 
-        REFERENCES users(id) ON DELETE RESTRICT
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    user_id    INT UNIQUE,
+    company    VARCHAR(255),
+    phone      VARCHAR(30),
+    notes      TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ---- Addons -------------------------------------------------
-CREATE TABLE IF NOT EXISTS addons (
-    id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    name         VARCHAR(255) NOT NULL,
-    api_base_url VARCHAR(512) NOT NULL,
-    created_by   INT UNSIGNED NOT NULL,
-    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_addons_name (name),
-    CONSTRAINT fk_addons_created_by FOREIGN KEY (created_by) 
-        REFERENCES users(id) ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+SET foreign_key_checks = 1;

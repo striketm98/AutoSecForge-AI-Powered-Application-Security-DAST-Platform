@@ -1,0 +1,14 @@
+{
+  "name": "autosecforge-mcp-hackstrike",
+  "version": "1.0.0",
+  "description": "AutoSecForge MCP – JSON-RPC tool-routing fabric",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "axios": "^1.6.7",
+    "dockerode": "^4.0.2",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5"
+  }
+}

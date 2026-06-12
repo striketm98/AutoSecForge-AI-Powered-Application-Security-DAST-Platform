@@ -1,35 +1,12 @@
-# ============================================================
-# AutoSecForge – .gitignore
-# ASF-001 / ASF-008 FIX: Never commit secrets or uploads.
-# ============================================================
-
-# Environment / secrets
+# ASF-001: Never expose secrets
 .env
-*.env
-secrets/
-docker-secrets/
-
-# Upload storage (outside webroot)
-storage/
-
-# Composer / npm
-vendor/
-node_modules/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
+ssl/
+logs/
+uploads/
 *.log
-/tmp/
-
-# Build artefacts
-*.zip
-*.tar.gz
+backup_*.sql
+*.backup
+storage/
+.claude/
+node_modules/
+__pycache__/
