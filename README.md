@@ -343,6 +343,7 @@ Six roles control navigation, data visibility, and actions:
 | Certificate warning | Expected — the bundled cert is self-signed. Accept it once, or install a CA-signed cert (see Hardening). |
 | Dashboard unreachable at the domain | `docker compose ps` — if `app` is restarting, check `docker compose logs app`. Confirm the hosts entry maps to `127.0.0.1`. |
 | Login fails with DB error | DB may still be initializing — wait for `db` to report *healthy*. To rebuild the schema: `docker compose down -v && docker compose up -d` (**destroys data**). |
+| `PDOException: Access denied for user 'dashboard'` | `DB_PASSWORD` differs between the root `.env` (read by compose/MySQL) and `public/.env` (read by PHP), or you changed it after first boot — MySQL only applies credentials on first init. Make both files identical, then re-init just the DB: `docker compose down && docker volume rm autosecforge-v2_mysql-data && docker compose up -d` (keeps Ollama models). |
 | AI analysis says "triage unavailable" | Model not pulled: `docker exec autosecforge-ollama ollama pull llama3`. Confirm with `curl localhost:11434/api/tags`. |
 | AI responses extremely slow | CPU inference is slow for big models — switch to `phi3:mini`/`mistral`, or enable the GPU stanza. |
 | Scans return "Invalid or private target" | Working as intended — SSRF guard blocks internal ranges. Test against a host you're authorized to scan (e.g., `scanme.nmap.org`). |
