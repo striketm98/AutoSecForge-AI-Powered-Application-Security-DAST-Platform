@@ -1,6 +1,7 @@
-FROM sqlmap/sqlmap:latest
-# The official image already has sqlmap installed and on PATH.
-# The MCP router orchestrates scans via `docker exec autosecforge-sqlmap sqlmap -u ...`,
-# so we keep the container alive rather than running the API daemon.
-EXPOSE 6000
+FROM alpine:3.19
+# SQL injection scanner used by the MCP router via
+# `docker exec autosecforge-sqlmap sqlmap -u ...`.
+# (There is no official sqlmap/sqlmap image on Docker Hub, so install from apk.)
+RUN apk add --no-cache sqlmap
+# Keep the container alive so the orchestrator can exec into it.
 CMD ["sleep", "infinity"]
