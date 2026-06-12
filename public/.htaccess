@@ -1,0 +1,42 @@
+<IfModule mod_headers.c>
+    Header always set X-Frame-Options "DENY"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+</IfModule>
+
+Options -Indexes
+
+# Block .env and hidden files from web access
+<FilesMatch "(^\.env|\.env\.|\.htpasswd|\.git)">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>
+
+# Block all PHP by default
+<FilesMatch "\.(php|phtml)$">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>
+
+# Allow known public pages
+<FilesMatch "^(index|login|home|dashboard|logout|change_password|scan_trigger|scan_jobs|report|clients|checklist|audit|addons|settings|review|deliverables|oasm|export|import)\.php$">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>
+
+# Allow API endpoints
+<FilesMatch "^(stats|recent_scans|trigger_scan|ai_analyze|findings)\.php$">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>
+
+# mod_rewrite for clean URLs (optional)
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+</IfModule>

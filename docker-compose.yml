@@ -1,0 +1,195 @@
+version: '3.8'
+
+# ── AutoSecForge Pro v12.1 ─────────────────────────────────────────
+# WSL2 / Kali-Linux-Docker compatible
+# Usage:
+#   docker compose up -d
+#   docker exec autosecforge-ollama-1 ollama pull llama3
+#   Open: http://localhost:8080  (login: admin@autosecforge.local / Admin@123)
+
+networks:
+  asf-net:
+    driver: bridge
+
+volumes:
+  ollama-data:
+  mysql-data:
+  sonar-data:
+  sonar-logs:
+  sonar-ext:
+
+services:
+
+  # ── PHP Application ────────────────────────────────────────────
+  app:
+    build: .
+    container_name: autosecforge-app
+    ports:
+      - "8080:80"
+    volumes:
+      - ./public:/var/www/html
+      - ./views:/var/www/views
+      - ./src:/var/www/src
+    environment:
+      MCP_URL:       http://mcp-router:6300
+      AI_AGENT_URL:  http://ai-agent:6400
+      OASM_URL:      http://oasm:6200
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # WSL2 / Kali host access
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── MySQL 8 ───────────────────────────────────────────────────
+  db:
+    image: mysql:8.4
+    container_name: autosecforge-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE:      ${DB_NAME:-security_dashboard}
+      MYSQL_USER:          ${DB_USER:-dashboard}
+      MYSQL_PASSWORD:      ${DB_PASSWORD:-ChangeMe123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── Ollama Local LLM ──────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: autosecforge-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - asf-net
+    restart: unless-stopped
+    # ── GPU (uncomment for NVIDIA) ──────────────────────────────
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ── AI Agent (Ollama-backed, OpenAI-compatible API) ───────────
+  ai-agent:
+    build: ./ai-agent
+    container_name: autosecforge-ai-agent
+    ports:
+      - "6400:6400"
+    environment:
+      OLLAMA_URL:   http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3}
+    depends_on:
+      - ollama
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── MCP Router (HackStrike orchestration) ─────────────────────
+  mcp-router:
+    build: ./mcp-server
+    container_name: autosecforge-mcp-router
+    ports:
+      - "6300:6300"
+    environment:
+      AI_AGENT_URL: http://ai-agent:6400
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - ai-agent
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── OASM (Attack Surface) ─────────────────────────────────────
+  oasm:
+    build: ./tool-wrappers/oasm
+    container_name: autosecforge-oasm
+    ports:
+      - "6200:6200"
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── OWASP ZAP (DAST) ─────────────────────────────────────────
+  zap:
+    image: zaproxy/zap-stable:latest
+    container_name: autosecforge-zap
+    command: zap.sh -daemon -host 0.0.0.0 -port 8090 -config api.key=${ZAP_API_KEY:-ZapKeyChangeMe}
+    ports:
+      - "8091:8090"
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── SonarQube (SAST) ──────────────────────────────────────────
+  sonarqube:
+    image: sonarqube:10-community
+    container_name: autosecforge-sonarqube
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonar-data:/opt/sonarqube/data
+      - sonar-logs:/opt/sonarqube/logs
+      - sonar-ext:/opt/sonarqube/extensions
+    ulimits:
+      nofile: { soft: 65536, hard: 65536 }
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── MobSF (Mobile security) ───────────────────────────────────
+  mobsf:
+    image: opensecurity/mobile-security-framework-mobsf:latest
+    container_name: autosecforge-mobsf
+    ports:
+      - "8000:8000"
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── Trivy (SCA/container scanning) ───────────────────────────
+  trivy:
+    image: aquasec/trivy:latest
+    container_name: autosecforge-trivy
+    command: server --listen 0.0.0.0:8081
+    ports:
+      - "8081:8081"
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── Pentest Python (replicated) ───────────────────────────────
+  pentest-python:
+    build: ./tool-wrappers/pentest-python
+    deploy:
+      replicas: 2
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── SQLMap ────────────────────────────────────────────────────
+  sqlmap:
+    build: ./tool-wrappers/sqlmap
+    container_name: autosecforge-sqlmap
+    ports:
+      - "6000:6000"
+    networks:
+      - asf-net
+    restart: unless-stopped
