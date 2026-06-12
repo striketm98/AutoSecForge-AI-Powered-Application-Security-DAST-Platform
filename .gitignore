@@ -1,0 +1,12 @@
+# ASF-001: Never expose secrets
+.env
+ssl/
+logs/
+uploads/
+*.log
+backup_*.sql
+*.backup
+storage/
+.claude/
+node_modules/
+__pycache__/

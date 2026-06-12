@@ -1,0 +1,223 @@
+# ── AutoSecForge Pro v12.1 ─────────────────────────────────────────
+# WSL2 / Kali-Linux-Docker compatible
+#
+# ACCESS POLICY:
+#   • Only the PHP app is reachable from the host, and ONLY over HTTPS
+#     via the domain https://autosecforge.com
+#   • App ports are bound to 127.0.0.1 — not reachable from the LAN/IP
+#   • All tool/AI/DB services have NO host ports — they are reachable
+#     only on the internal `asf-net` Docker network (service-to-service)
+#
+# SETUP:
+#   1) Map the domain to localhost (host machine):
+#        echo "127.0.0.1 autosecforge.com" | sudo tee -a /etc/hosts
+#        (Windows: add to C:\Windows\System32\drivers\etc\hosts)
+#   2) docker compose up -d --build
+#   3) docker exec autosecforge-ollama ollama pull llama3
+#   4) Open: https://autosecforge.com   (accept the self-signed cert)
+#      Login: admin@autosecforge.local / Admin@123
+
+networks:
+  asf-net:
+    driver: bridge
+
+volumes:
+  ollama-data:
+  mysql-data:
+  sonar-data:
+  sonar-logs:
+  sonar-ext:
+
+services:
+
+  # ── PHP Application (the ONLY host-exposed service) ────────────
+  app:
+    build: .
+    container_name: autosecforge-app
+    ports:
+      # Bound to loopback only — no IP/LAN access. Reach via the domain.
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+    volumes:
+      - ./public:/var/www/html
+      - ./views:/var/www/views
+      - ./src:/var/www/src
+    environment:
+      MCP_URL:       http://mcp-router:6300
+      AI_AGENT_URL:  http://ai-agent:6400
+      OASM_URL:      http://oasm:6200
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # WSL2 / Kali host access
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── MySQL 8 (internal only) ───────────────────────────────────
+  db:
+    image: mysql:8.4
+    container_name: autosecforge-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE:      ${DB_NAME:-security_dashboard}
+      MYSQL_USER:          ${DB_USER:-dashboard}
+      MYSQL_PASSWORD:      ${DB_PASSWORD:-ChangeMe123}
+    expose:
+      - "3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── Ollama Local LLM (internal only) ──────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: autosecforge-ollama
+    expose:
+      - "11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - asf-net
+    restart: unless-stopped
+    # ── GPU (uncomment for NVIDIA) ──────────────────────────────
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ── AI Agent (Ollama-backed, OpenAI-compatible API) ───────────
+  ai-agent:
+    build: ./ai-agent
+    container_name: autosecforge-ai-agent
+    expose:
+      - "6400"
+    environment:
+      OLLAMA_URL:   http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3}
+    depends_on:
+      - ollama
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── MCP Router (HackStrike orchestration) ─────────────────────
+  mcp-router:
+    build: ./mcp-server
+    container_name: autosecforge-mcp-router
+    expose:
+      - "6300"
+    environment:
+      AI_AGENT_URL: http://ai-agent:6400
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - ai-agent
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── nmap (network scanner — exec target for MCP router) ───────
+  nmap:
+    build: ./tool-wrappers/nmap
+    container_name: autosecforge-nmap
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── nikto (web scanner — exec target for MCP router) ──────────
+  nikto:
+    build: ./tool-wrappers/nikto
+    container_name: autosecforge-nikto
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── OASM (Attack Surface) ─────────────────────────────────────
+  oasm:
+    build: ./tool-wrappers/oasm
+    container_name: autosecforge-oasm
+    expose:
+      - "6200"
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── OWASP ZAP (DAST) ─────────────────────────────────────────
+  zap:
+    image: zaproxy/zap-stable:latest
+    container_name: autosecforge-zap
+    command: zap.sh -daemon -host 0.0.0.0 -port 8090 -config api.key=${ZAP_API_KEY:-ZapKeyChangeMe}
+    expose:
+      - "8090"
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── SonarQube (SAST) ──────────────────────────────────────────
+  sonarqube:
+    image: sonarqube:10-community
+    container_name: autosecforge-sonarqube
+    expose:
+      - "9000"
+    volumes:
+      - sonar-data:/opt/sonarqube/data
+      - sonar-logs:/opt/sonarqube/logs
+      - sonar-ext:/opt/sonarqube/extensions
+    ulimits:
+      nofile: { soft: 65536, hard: 65536 }
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── MobSF (Mobile security) ───────────────────────────────────
+  mobsf:
+    image: opensecurity/mobile-security-framework-mobsf:latest
+    container_name: autosecforge-mobsf
+    expose:
+      - "8000"
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── Trivy (SCA/container scanning) ───────────────────────────
+  trivy:
+    image: aquasec/trivy:latest
+    container_name: autosecforge-trivy
+    command: server --listen 0.0.0.0:8081
+    expose:
+      - "8081"
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── Pentest Python (replicated) ───────────────────────────────
+  pentest-python:
+    build: ./tool-wrappers/pentest-python
+    deploy:
+      replicas: 2
+    networks:
+      - asf-net
+    restart: unless-stopped
+
+  # ── SQLMap ────────────────────────────────────────────────────
+  sqlmap:
+    build: ./tool-wrappers/sqlmap
+    container_name: autosecforge-sqlmap
+    expose:
+      - "6000"
+    networks:
+      - asf-net
+    restart: unless-stopped
