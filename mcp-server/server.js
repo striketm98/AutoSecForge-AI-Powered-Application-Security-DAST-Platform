@@ -13,6 +13,10 @@ const app    = express();
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 
 const AI_AGENT_URL = process.env.AI_AGENT_URL || 'http://ai-agent:6400';
+const ZAP_URL      = process.env.ZAP_URL      || 'http://zap:8090';
+const ZAP_API_KEY  = process.env.ZAP_API_KEY  || '';
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Security middleware ──────────────────────────────────────────
 app.use(helmet());
@@ -68,6 +72,68 @@ async function aiTriage(target, scanType, rawOutput) {
     } catch (e) {
         return { ok: false, analysis: `AI triage unavailable: ${e.message}` };
     }
+}
+
+// ── OWASP ZAP (DAST via REST API) ────────────────────────────────
+async function zapGet(path, params = {}) {
+    const resp = await axios.get(`${ZAP_URL}${path}`, {
+        params: { apikey: ZAP_API_KEY, ...params },
+        timeout: 20_000,
+    });
+    return resp.data;
+}
+
+/**
+ * Run a bounded ZAP spider + active scan and collect alerts.
+ * Polling is time-capped so the orchestrated review never hangs the request.
+ */
+async function runZap(url) {
+    try {
+        // 1) Spider (cap ~60s)
+        const spider = await zapGet('/JSON/spider/action/scan/', { url, maxChildren: 10 });
+        const spiderId = spider.scan;
+        for (let i = 0; i < 30; i++) {
+            const s = await zapGet('/JSON/spider/view/status/', { scanId: spiderId });
+            if (parseInt(s.status) >= 100) break;
+            await sleep(2000);
+        }
+
+        // 2) Active scan (cap ~90s) — best effort, alerts collected regardless
+        let ascanId = null;
+        try {
+            const ascan = await zapGet('/JSON/ascan/action/scan/', { url, recurse: true, inScopeOnly: false });
+            ascanId = ascan.scan;
+            for (let i = 0; i < 45; i++) {
+                const s = await zapGet('/JSON/ascan/view/status/', { scanId: ascanId });
+                if (parseInt(s.status) >= 100) break;
+                await sleep(2000);
+            }
+        } catch (_e) { /* active scan may be disabled — keep passive alerts */ }
+
+        // 3) Collect alerts
+        const data   = await zapGet('/JSON/alert/view/alerts/', { baseurl: url, start: 0, count: 200 });
+        const alerts = data.alerts || [];
+
+        if (!alerts.length) {
+            return { success: true, stdout: `ZAP scan complete for ${url}. No alerts reported.` };
+        }
+        const lines = alerts.slice(0, 200).map(a =>
+            `[${(a.risk || 'Info').toUpperCase()}] ${a.alert} | url=${a.url} | CWE-${a.cweid || '?'} | confidence=${a.confidence} | ${(a.description || '').slice(0, 200)}`
+        );
+        return { success: true, stdout: `=== ZAP ALERTS (${alerts.length}) for ${url} ===\n` + lines.join('\n') };
+    } catch (e) {
+        return { success: false, error: `ZAP unreachable or failed: ${e.message}` };
+    }
+}
+
+// ── Trivy (container/filesystem SCA) ─────────────────────────────
+// Image names don't fit the host-target validator, so guard separately.
+const IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\/-]{0,200}(:[a-zA-Z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$/;
+
+async function runTrivy(image) {
+    // Standalone scan inside the trivy container; --quiet keeps stdout clean.
+    const cmd = `trivy image --scanners vuln --quiet --no-progress --severity CRITICAL,HIGH,MEDIUM ${image}`;
+    return runInContainer('autosecforge-trivy', cmd);
 }
 
 // ── Health ────────────────────────────────────────────────────────
@@ -128,10 +194,10 @@ app.post('/scan/security-review', scanLimiter, async (req, res) => {
         ? scan_types
         : ['network'];
 
-    const ALLOWED_TYPES = new Set(['network', 'dast', 'sqli']);
+    const ALLOWED_TYPES = new Set(['network', 'dast', 'sqli', 'zap']);
     const validTypes = types.filter(t => ALLOWED_TYPES.has(t));
     if (!validTypes.length) {
-        return res.status(400).json({ error: 'No valid scan types specified. Allowed: network, dast, sqli' });
+        return res.status(400).json({ error: 'No valid scan types specified. Allowed: network, dast, sqli, zap' });
     }
 
     const rawParts   = [];
@@ -160,6 +226,12 @@ app.post('/scan/security-review', scanLimiter, async (req, res) => {
                 rawParts.push(`=== SQLMAP (sqli) ===\n${result.stdout || result.error}`);
                 break;
             }
+            case 'zap': {
+                const url = target.startsWith('http') ? target : `http://${target}`;
+                result = await runZap(url);
+                rawParts.push(`=== OWASP ZAP (dast) ===\n${result.stdout || result.error}`);
+                break;
+            }
         }
         if (!result.success) {
             scanErrors.push(`${type}: ${result.error}`);
@@ -181,6 +253,30 @@ app.post('/scan/security-review', scanLimiter, async (req, res) => {
         model: triage.model || 'unknown',
         timestamp: new Date().toISOString(),
         ok: triage.ok !== false,
+    });
+});
+
+// ── Container / image SCA (Trivy → Ollama triage) ────────────────
+app.post('/scan/container', scanLimiter, async (req, res) => {
+    const { image } = req.body;
+    if (!image || typeof image !== 'string' || !IMAGE_RE.test(image.trim())) {
+        return res.status(400).json({ error: 'Invalid image reference. Example: nginx:1.25 or alpine@sha256:…' });
+    }
+    const img    = image.trim();
+    const result = await runTrivy(img);
+    const raw    = `=== TRIVY (container SCA) for ${img} ===\n${result.stdout || result.error}`;
+    const triage = await aiTriage(img, 'container', raw);
+
+    res.json({
+        target:      img,
+        scan_types:  ['container'],
+        raw_output:  raw,
+        scan_errors: result.success ? [] : [`trivy: ${result.error}`],
+        analysis:    triage.analysis || triage.content || '',
+        findings:    Array.isArray(triage.findings) ? triage.findings : [],
+        model:       triage.model || 'unknown',
+        timestamp:   new Date().toISOString(),
+        ok:          triage.ok !== false,
     });
 });
 

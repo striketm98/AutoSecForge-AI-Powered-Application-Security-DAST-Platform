@@ -8,6 +8,67 @@ if (!in_array($_SESSION['user_role'] ?? '', ['admin','manager','analyst'])) {
 
 $page_title = 'New Security Review';
 
+// ── Container image SCA (Trivy) AJAX handler ───────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && !empty($_SERVER['HTTP_X_REQUESTED_WITH'])
+    && ($_POST['mode'] ?? '') === 'container') {
+    header('Content-Type: application/json');
+
+    $image = trim($_POST['image'] ?? '');
+    if ($image === '' || !preg_match('#^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}(:[A-Za-z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$#', $image)) {
+        echo json_encode(['error' => 'Invalid image reference. Example: nginx:1.25']); exit;
+    }
+
+    $env     = @parse_ini_file('/var/www/html/.env', false, INI_SCANNER_RAW) ?: [];
+    $mcp_url = rtrim($env['MCP_URL'] ?? 'http://mcp-router:6300', '/');
+
+    $ch = curl_init("$mcp_url/scan/container");
+    curl_setopt_array($ch, [
+        CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['image'=>$image]),
+        CURLOPT_HTTPHEADER=>['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER=>true, CURLOPT_TIMEOUT=>300,
+    ]);
+    $raw = curl_exec($ch); $err = curl_error($ch); curl_close($ch);
+    if ($err) { echo json_encode(['error'=>"MCP unreachable: $err"]); exit; }
+
+    $result = json_decode($raw, true) ?: ['error'=>'Invalid MCP response.'];
+
+    if (empty($result['error'])) {
+        try {
+            $pdo = Database::getInstance();
+            $stmt = $pdo->prepare(
+                'INSERT INTO scan_jobs (target, scan_types, raw_output, analysis, model, triggered_by, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)'
+            );
+            $stmt->execute([
+                $image, 'container',
+                $result['raw_output'] ?? '', $result['analysis'] ?? '',
+                $result['model'] ?? '', $_SESSION['user_id'] ?? null,
+                ($result['ok'] ?? true) ? 'completed' : 'partial',
+            ]);
+            $job_id = $pdo->lastInsertId();
+            $result['job_id'] = $job_id;
+            if (!empty($result['findings']) && is_array($result['findings'])) {
+                $fstmt = $pdo->prepare(
+                    'INSERT INTO findings (scan_job_id, title, description, severity, cvss_score, cwe_id, cve_id, affected_url, remediation)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                );
+                $allowed = ['critical','high','medium','low','info'];
+                foreach ($result['findings'] as $f) {
+                    if (empty($f['title'])) continue;
+                    $sev = strtolower(trim($f['severity'] ?? 'medium'));
+                    if (!in_array($sev, $allowed, true)) $sev = 'medium';
+                    $cvss = isset($f['cvss_score']) && is_numeric($f['cvss_score']) ? max(0,min(10,(float)$f['cvss_score'])) : null;
+                    try { $fstmt->execute([$job_id, mb_substr($f['title'],0,500), $f['description']??'', $sev, $cvss,
+                        mb_substr($f['cwe_id']??'',0,20), mb_substr($f['cve_id']??'',0,30), mb_substr($f['affected_url']??'',0,1000), $f['remediation']??'']); }
+                    catch (Throwable) {}
+                }
+            }
+        } catch (Throwable $e) { $result['db_warning'] = $e->getMessage(); }
+    }
+    echo json_encode($result); exit;
+}
+
 // ── AJAX POST handler ──────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_WITH'])) {
     header('Content-Type: application/json');
@@ -180,6 +241,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
                 <input type="checkbox" name="scan_types[]" value="sqli" class="ml-2" style="width:16px;height:16px;accent-color:#ef4444;">
               </div>
             </div>
+
+            <div class="scan-module-option" data-val="zap">
+              <div class="d-flex align-items-center p-3 rounded mb-2 border" style="cursor:pointer;transition:all .15s;" id="opt_zap">
+                <div style="width:36px;height:36px;border-radius:.5rem;background:#ecfeff;display:flex;align-items:center;justify-content:center;margin-right:.75rem;flex-shrink:0;">
+                  <i class="fas fa-bug" style="color:#06b6d4;"></i>
+                </div>
+                <div class="flex-grow-1">
+                  <div style="font-size:.82rem;font-weight:600;color:#1e293b;">OWASP ZAP <span class="badge badge-info" style="font-size:.55rem;">deep</span></div>
+                  <div style="font-size:.72rem;color:#64748b;">spider + active scan (slower, thorough)</div>
+                </div>
+                <input type="checkbox" name="scan_types[]" value="zap" class="ml-2" style="width:16px;height:16px;accent-color:#06b6d4;">
+              </div>
+            </div>
           </div>
 
           <button type="submit" class="btn btn-asf btn-block py-3 mt-2" id="btnScan">
@@ -200,6 +274,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
             Pull a model first if not done:<br>
             <code style="font-size:.72rem;">docker exec ollama ollama pull llama3</code>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Container / image SCA (Trivy) -->
+    <div class="card mt-3">
+      <div class="card-header">
+        <span class="card-title"><i class="fas fa-cube mr-2" style="color:#0ea5e9;"></i>Container Image SCA</span>
+      </div>
+      <div class="card-body">
+        <form id="trivyForm">
+          <div class="form-group mb-2">
+            <label class="font-weight-bold" style="font-size:.8rem;color:#374151;">Image reference</label>
+            <input type="text" class="form-control" id="trivyImage" placeholder="nginx:1.25 or alpine:3.19"
+                   autocomplete="off" style="border-radius:.5rem;">
+            <small class="text-muted">Trivy scans the image for known CVEs (Critical/High/Medium).</small>
+          </div>
+          <button type="submit" class="btn btn-outline-info btn-block" id="btnTrivy">
+            <i class="fas fa-cube mr-1"></i>Scan Image
+          </button>
+        </form>
+        <div id="trivyStatus" class="text-center mt-2 d-none">
+          <span class="spinner-border spinner-border-sm text-info" role="status"></span>
+          <small class="text-muted ml-1">Scanning image &amp; triaging… this can take a minute.</small>
         </div>
       </div>
     </div>
@@ -348,6 +446,7 @@ function startProgress(types) {
   if (types.includes('network')) msgs.push('Running nmap network scan…');
   if (types.includes('dast'))    msgs.push('Running nikto DAST scan…');
   if (types.includes('sqli'))    msgs.push('Running sqlmap SQLi check…');
+  if (types.includes('zap'))     msgs.push('Running OWASP ZAP spider + active scan…');
   msgs.push('Sending output to Ollama…', 'AI generating triage report…');
 
   let i = 0;
@@ -418,6 +517,54 @@ document.getElementById('scanForm').addEventListener('submit', async function(e)
     toast('Request failed: ' + err.message, 'danger');
   } finally {
     document.getElementById('btnScan').disabled = false;
+  }
+});
+
+// ── Trivy container image scan ────────────────────────────────────
+document.getElementById('trivyForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const image = document.getElementById('trivyImage').value.trim();
+  if (!image) { toast('Enter an image reference.', 'warning'); return; }
+
+  document.getElementById('btnTrivy').disabled = true;
+  document.getElementById('trivyStatus').classList.remove('d-none');
+  document.getElementById('resultCard').classList.add('d-none');
+  document.getElementById('errorCard').classList.add('d-none');
+  document.getElementById('placeholder').classList.add('d-none');
+
+  const fd = new FormData();
+  fd.append('mode', 'container');
+  fd.append('image', image);
+
+  try {
+    const resp = await fetch('scan_trigger.php', {
+      method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd,
+    });
+    const data = await resp.json();
+    document.getElementById('trivyStatus').classList.add('d-none');
+
+    if (data.error) {
+      document.getElementById('errorCard').classList.remove('d-none');
+      document.getElementById('errorMsg').textContent = data.error;
+      toast('Image scan failed: ' + data.error, 'danger');
+    } else {
+      document.getElementById('resTarget').textContent    = data.target || image;
+      document.getElementById('resAnalysis').textContent  = data.analysis || '(No analysis returned)';
+      document.getElementById('resRaw').textContent       = data.raw_output || '(empty)';
+      document.getElementById('resModel').textContent     = 'Model: ' + (data.model || 'unknown');
+      document.getElementById('resJobId').textContent     = data.job_id || '—';
+      document.getElementById('resTimestamp').textContent = data.timestamp ? data.timestamp.slice(0,19).replace('T',' ') + ' UTC' : '';
+      document.getElementById('errorsBox').classList.add('d-none');
+      document.getElementById('resultCard').classList.remove('d-none');
+      toast('Container scan completed!', 'success');
+    }
+  } catch (err) {
+    document.getElementById('trivyStatus').classList.add('d-none');
+    document.getElementById('errorCard').classList.remove('d-none');
+    document.getElementById('errorMsg').textContent = err.message;
+    toast('Request failed: ' + err.message, 'danger');
+  } finally {
+    document.getElementById('btnTrivy').disabled = false;
   }
 });
 

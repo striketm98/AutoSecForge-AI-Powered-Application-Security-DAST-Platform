@@ -126,10 +126,13 @@ services:
       - "6300"
     environment:
       AI_AGENT_URL: http://ai-agent:6400
+      ZAP_URL:      http://zap:8090
+      ZAP_API_KEY:  ${ZAP_API_KEY:-ZapKeyChangeMe}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - ai-agent
+      - zap
     networks:
       - asf-net
     restart: unless-stopped
