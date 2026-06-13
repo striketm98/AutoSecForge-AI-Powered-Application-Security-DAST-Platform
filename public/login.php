@@ -1,14 +1,17 @@
 <?php
 session_start();
 require_once '../src/auth.php';
+require_once '../src/helpers.php';
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = $_POST['email'] ?? '';
     $password = $_POST['password'] ?? '';
     if (authenticateUser($email, $password)) {
+        asf_audit('auth.login', "email=$email");
         header('Location: home.php');
         exit;
     }
+    asf_audit('auth.login_failed', "email=$email");
     $error = 'Invalid email or password.';
 }
 ?>

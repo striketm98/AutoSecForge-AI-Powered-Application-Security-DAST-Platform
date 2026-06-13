@@ -30,7 +30,7 @@ Options -Indexes
 </FilesMatch>
 
 # Allow known public pages
-<FilesMatch "^(index|login|home|dashboard|logout|change_password|scan_trigger|scan_jobs|report|clients|checklist|audit|addons|settings|review|deliverables|oasm|export|import)\.php$">
+<FilesMatch "^(index|login|home|dashboard|logout|change_password|scan_trigger|scan_jobs|report|clients|checklist|audit|addons|settings|review|deliverables|oasm|export|import|mobsf|sast)\.php$">
     Require all granted
 </FilesMatch>
 
