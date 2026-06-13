@@ -13,6 +13,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     libcurl4-openssl-dev \
     openssl \
+    wkhtmltopdf \
+    xvfb \
+    xfonts-base \
+    xfonts-75dpi \
+    fontconfig \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd curl \
     && rm -rf /var/lib/apt/lists/*

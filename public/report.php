@@ -1,18 +1,25 @@
 <?php
 require_once '../src/auth.php';
 require_auth();
+require_once '../src/report_render.php';
 $page_title = 'Reports';
 
-// Export a single report as text/plain
+// ── Export a single report: ?export=ID&format=pdf|doc|html|txt ─────
 if (isset($_GET['export']) && ctype_digit($_GET['export'])) {
+    $id     = (int)$_GET['export'];
+    $format = strtolower($_GET['format'] ?? 'pdf');
+    if (!in_array($format, ['pdf','doc','html','txt'], true)) $format = 'pdf';
     try {
-        $pdo  = Database::getInstance();
-        $stmt = $pdo->prepare('SELECT * FROM scan_jobs WHERE id=? LIMIT 1');
-        $stmt->execute([(int)$_GET['export']]);
-        $job  = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($job) {
+        $pdo = Database::getInstance();
+        $job = asf_get_report_data($pdo, $id);
+        if (!$job) { http_response_code(404); exit('Report not found.'); }
+
+        $fnameBase = 'AutoSecForge_Report_ASF-' . str_pad((string)$id, 6, '0', STR_PAD_LEFT);
+
+        // ── Plain text (legacy/portable) ──────────────────────────
+        if ($format === 'txt') {
             header('Content-Type: text/plain; charset=utf-8');
-            header('Content-Disposition: attachment; filename="AutoSecForge_Report_'.(int)$_GET['export'].'.txt"');
+            header('Content-Disposition: attachment; filename="' . $fnameBase . '.txt"');
             echo "AutoSecForge Pro – Security Review Report\n";
             echo str_repeat('=', 60) . "\n";
             echo "Target     : {$job['target']}\n";
@@ -21,16 +28,71 @@ if (isset($_GET['export']) && ctype_digit($_GET['export'])) {
             echo "Model      : {$job['model']}\n";
             echo "Date       : {$job['created_at']}\n";
             echo str_repeat('=', 60) . "\n\n";
-            echo "AI TRIAGE ANALYSIS\n";
-            echo str_repeat('-', 60) . "\n";
-            echo $job['analysis'] . "\n\n";
-            echo "RAW SCAN OUTPUT\n";
-            echo str_repeat('-', 60) . "\n";
+            foreach (($job['findings'] ?? []) as $i => $f) {
+                echo sprintf("[%s] %s\n", strtoupper($f['severity']), $f['title']);
+                if (!empty($f['remediation'])) echo "  Fix: {$f['remediation']}\n";
+            }
+            echo "\nAI TRIAGE ANALYSIS\n" . str_repeat('-', 60) . "\n";
+            echo $job['analysis'] . "\n\nRAW SCAN OUTPUT\n" . str_repeat('-', 60) . "\n";
             echo $job['raw_output'];
             exit;
         }
-    } catch (Throwable) {}
-    http_response_code(404); exit('Report not found.');
+
+        // ── Word (.doc — HTML-based, opens natively in MS Word) ───
+        if ($format === 'doc') {
+            header('Content-Type: application/msword; charset=utf-8');
+            header('Content-Disposition: attachment; filename="' . $fnameBase . '.doc"');
+            echo asf_render_report_html($job, ['for_word' => true]);
+            exit;
+        }
+
+        $html = asf_render_report_html($job);
+
+        // ── In-browser HTML preview / print-to-PDF fallback ───────
+        if ($format === 'html') {
+            header('Content-Type: text/html; charset=utf-8');
+            echo $html;
+            exit;
+        }
+
+        // ── PDF via wkhtmltopdf (real file) ───────────────────────
+        $bin = trim((string)@shell_exec('command -v wkhtmltopdf 2>/dev/null'));
+        if ($bin === '') {
+            // Renderer missing — fall back to a print-optimised HTML view.
+            header('Content-Type: text/html; charset=utf-8');
+            echo str_replace('</body>',
+                '<script>window.onload=function(){window.print();};</script></body>', $html);
+            exit;
+        }
+        // Debian's wkhtmltopdf uses unpatched Qt and needs an X server → xvfb-run.
+        $xvfb = trim((string)@shell_exec('command -v xvfb-run 2>/dev/null'));
+        $cmd  = ($xvfb !== '' ? escapeshellarg($xvfb) . ' -a ' : '')
+             . escapeshellarg($bin)
+             . ' --quiet --enable-local-file-access --print-media-type'
+             . ' --encoding utf-8 --page-size A4'
+             . ' --margin-top 14mm --margin-bottom 14mm --margin-left 12mm --margin-right 12mm'
+             . ' - -';   // read HTML from stdin, write PDF to stdout
+        $descriptors = [0 => ['pipe','r'], 1 => ['pipe','w'], 2 => ['pipe','w']];
+        $proc = proc_open($cmd, $descriptors, $pipes);
+        if (is_resource($proc)) {
+            fwrite($pipes[0], $html); fclose($pipes[0]);
+            $pdf = stream_get_contents($pipes[1]); fclose($pipes[1]);
+            fclose($pipes[2]); proc_close($proc);
+            if ($pdf !== '' && substr($pdf, 0, 4) === '%PDF') {
+                header('Content-Type: application/pdf');
+                header('Content-Disposition: attachment; filename="' . $fnameBase . '.pdf"');
+                header('Content-Length: ' . strlen($pdf));
+                echo $pdf; exit;
+            }
+        }
+        // PDF generation failed — print-to-PDF fallback.
+        header('Content-Type: text/html; charset=utf-8');
+        echo str_replace('</body>',
+            '<script>window.onload=function(){window.print();};</script></body>', $html);
+        exit;
+    } catch (Throwable $e) {
+        http_response_code(500); exit('Export failed: ' . htmlspecialchars($e->getMessage()));
+    }
 }
 
 $jobs = []; $db_error = null;
@@ -96,9 +158,18 @@ try {
                 <button class="btn btn-sm btn-outline-primary px-2 py-1 mr-1" onclick="previewReport(<?=(int)$job['id']?>)">
                   <i class="fas fa-eye mr-1"></i>View
                 </button>
-                <a href="report.php?export=<?=(int)$job['id']?>" class="btn btn-sm btn-outline-success px-2 py-1">
-                  <i class="fas fa-download mr-1"></i>Export
-                </a>
+                <div class="btn-group">
+                  <button type="button" class="btn btn-sm btn-outline-success px-2 py-1 dropdown-toggle" data-toggle="dropdown">
+                    <i class="fas fa-download mr-1"></i>Export
+                  </button>
+                  <div class="dropdown-menu dropdown-menu-right">
+                    <a class="dropdown-item" href="report.php?export=<?=(int)$job['id']?>&format=pdf"><i class="fas fa-file-pdf fa-fw mr-2 text-danger"></i>PDF document</a>
+                    <a class="dropdown-item" href="report.php?export=<?=(int)$job['id']?>&format=doc"><i class="fas fa-file-word fa-fw mr-2 text-primary"></i>Word (.doc)</a>
+                    <a class="dropdown-item" href="report.php?export=<?=(int)$job['id']?>&format=html" target="_blank"><i class="fas fa-file-code fa-fw mr-2 text-info"></i>HTML preview</a>
+                    <div class="dropdown-divider"></div>
+                    <a class="dropdown-item" href="report.php?export=<?=(int)$job['id']?>&format=txt"><i class="fas fa-file-alt fa-fw mr-2 text-muted"></i>Plain text</a>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -132,7 +203,9 @@ try {
         <div id="rAnalysis" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:.75rem;padding:1rem 1.25rem;white-space:pre-wrap;font-size:.82rem;line-height:1.65;max-height:420px;overflow-y:auto;"></div>
       </div>
       <div class="modal-footer" style="border-top:1px solid #f1f5f9;">
-        <a id="rExportLink" href="#" class="btn btn-sm btn-outline-success"><i class="fas fa-download mr-1"></i>Export .txt</a>
+        <a id="rPdfLink"  href="#" class="btn btn-sm btn-outline-danger"><i class="fas fa-file-pdf mr-1"></i>PDF</a>
+        <a id="rDocLink"  href="#" class="btn btn-sm btn-outline-primary"><i class="fas fa-file-word mr-1"></i>Word</a>
+        <a id="rTxtLink"  href="#" class="btn btn-sm btn-outline-secondary"><i class="fas fa-file-alt mr-1"></i>Text</a>
         <button type="button" class="btn btn-sm btn-secondary" data-dismiss="modal">Close</button>
       </div>
     </div>
@@ -150,7 +223,9 @@ async function previewReport(id) {
   document.getElementById('rTarget').textContent   = d.target;
   document.getElementById('rDate').textContent     = (d.created_at||'').slice(0,16);
   document.getElementById('rAnalysis').textContent = d.analysis || '(no analysis)';
-  document.getElementById('rExportLink').href      = `report.php?export=${d.id}`;
+  document.getElementById('rPdfLink').href = `report.php?export=${d.id}&format=pdf`;
+  document.getElementById('rDocLink').href = `report.php?export=${d.id}&format=doc`;
+  document.getElementById('rTxtLink').href = `report.php?export=${d.id}&format=txt`;
   document.getElementById('rTypes').innerHTML      = (d.scan_types||'').split(',').map(t =>
     `<span class="badge badge-secondary mr-1" style="font-size:.65rem;">${t.trim()}</span>`
   ).join('');
