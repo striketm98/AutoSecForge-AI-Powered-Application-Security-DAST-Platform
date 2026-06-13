@@ -1,5 +1,6 @@
 <?php
 require_once '../src/auth.php';
+require_once '../src/helpers.php';
 require_auth();
 
 if (!in_array($_SESSION['user_role'] ?? '', ['admin','manager','analyst'])) {
@@ -142,6 +143,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
         $stmt->execute([$appName, 'mobile', $summary, $analysis, $model, $_SESSION['user_id'] ?? null, 'completed']);
         $job_id = $pdo->lastInsertId();
         $result['job_id'] = $job_id;
+        asf_audit('scan.mobile', "app=$appName job=$job_id");
 
         $fstmt = $pdo->prepare(
             'INSERT INTO findings (scan_job_id, title, description, severity, affected_url, remediation)

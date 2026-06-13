@@ -1,5 +1,6 @@
 <?php
 require_once '../src/auth.php';
+require_once '../src/helpers.php';
 require_auth();
 
 if (!in_array($_SESSION['user_role'] ?? '', ['admin','manager','analyst'])) {
@@ -48,6 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
             ]);
             $job_id = $pdo->lastInsertId();
             $result['job_id'] = $job_id;
+            asf_audit('scan.container', "image=$image job=$job_id");
             if (!empty($result['findings']) && is_array($result['findings'])) {
                 $fstmt = $pdo->prepare(
                     'INSERT INTO findings (scan_job_id, title, description, severity, cvss_score, cwe_id, cve_id, affected_url, remediation)
@@ -122,6 +124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
             ]);
             $job_id = $pdo->lastInsertId();
             $result['job_id'] = $job_id;
+            asf_audit('scan.security_review', 'target=' . $target . ' types=' . implode(',', $scan_types) . " job=$job_id");
 
             // Persist structured findings (from the AI agent) for pro reports.
             if (!empty($result['findings']) && is_array($result['findings'])) {
