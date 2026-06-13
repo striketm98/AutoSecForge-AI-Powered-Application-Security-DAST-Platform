@@ -43,9 +43,11 @@ services:
       - ./views:/var/www/views
       - ./src:/var/www/src
     environment:
-      MCP_URL:       http://mcp-router:6300
-      AI_AGENT_URL:  http://ai-agent:6400
-      OASM_URL:      http://oasm:6200
+      MCP_URL:        http://mcp-router:6300
+      AI_AGENT_URL:   http://ai-agent:6400
+      OASM_URL:       http://oasm:6200
+      MOBSF_URL:      http://mobsf:8000
+      MOBSF_API_KEY:  ${MOBSF_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"   # WSL2 / Kali host access
     depends_on:
@@ -194,6 +196,10 @@ services:
   mobsf:
     image: opensecurity/mobile-security-framework-mobsf:latest
     container_name: autosecforge-mobsf
+    # Pin a fixed REST API key so the app can authenticate deterministically.
+    # Set MOBSF_API_KEY in .env (same value reaches the app service above).
+    environment:
+      MOBSF_API_KEY: ${MOBSF_API_KEY:-}
     expose:
       - "8000"
     networks:

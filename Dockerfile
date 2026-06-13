@@ -25,6 +25,15 @@ RUN apt-get update && apt-get install -y \
 # Enable required Apache modules (ssl + rewrite + headers)
 RUN a2enmod rewrite headers ssl
 
+# Allow large mobile-app uploads (APK/IPA) for the MobSF scanner page.
+RUN { \
+      echo 'upload_max_filesize=300M'; \
+      echo 'post_max_size=300M'; \
+      echo 'max_execution_time=600'; \
+      echo 'max_input_time=600'; \
+      echo 'memory_limit=512M'; \
+    } > /usr/local/etc/php/conf.d/asf-uploads.ini
+
 # Copy application files.
 # Note: .env is NOT baked into the image — it's git-ignored (may not exist in
 # the build context) and secrets don't belong in image layers. At runtime the
