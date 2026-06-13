@@ -13,14 +13,27 @@ RUN apt-get update && apt-get install -y \
     curl \
     libcurl4-openssl-dev \
     openssl \
-    wkhtmltopdf \
-    xvfb \
-    xfonts-base \
-    xfonts-75dpi \
-    fontconfig \
+    ca-certificates \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd curl zip \
     && rm -rf /var/lib/apt/lists/*
+
+# wkhtmltopdf for real PDF report export. Debian 13 (trixie) dropped the apt
+# package, so install the upstream patched-Qt static build — it renders headless
+# (no xvfb needed). Best-effort: if the download or its deps fail, the build
+# still succeeds and report.php falls back to a browser print-to-PDF view.
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    url="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_${arch}.deb"; \
+    apt-get update; \
+    if curl -fsSL -o /tmp/wkhtmltox.deb "$url"; then \
+        apt-get install -y --no-install-recommends /tmp/wkhtmltox.deb \
+            || echo "WARN: wkhtmltopdf dependencies unmet — PDF will use the print fallback"; \
+    else \
+        echo "WARN: wkhtmltopdf download failed — PDF will use the print fallback"; \
+    fi; \
+    rm -f /tmp/wkhtmltox.deb; \
+    rm -rf /var/lib/apt/lists/*
 
 # Enable required Apache modules (ssl + rewrite + headers)
 RUN a2enmod rewrite headers ssl
