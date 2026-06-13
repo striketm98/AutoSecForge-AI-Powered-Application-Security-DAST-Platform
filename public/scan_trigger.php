@@ -59,7 +59,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
                 $_SESSION['user_id']  ?? null,
                 $result['ok'] ? 'completed' : 'partial',
             ]);
-            $result['job_id'] = $pdo->lastInsertId();
+            $job_id = $pdo->lastInsertId();
+            $result['job_id'] = $job_id;
+
+            // Persist structured findings (from the AI agent) for pro reports.
+            if (!empty($result['findings']) && is_array($result['findings'])) {
+                $fstmt = $pdo->prepare(
+                    'INSERT INTO findings
+                        (scan_job_id, title, description, severity, cvss_score,
+                         cwe_id, cve_id, affected_url, remediation)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                );
+                $allowed_sev = ['critical','high','medium','low','info'];
+                foreach ($result['findings'] as $f) {
+                    if (empty($f['title'])) continue;
+                    $sev = strtolower(trim($f['severity'] ?? 'medium'));
+                    if (!in_array($sev, $allowed_sev, true)) $sev = 'medium';
+                    $cvss = isset($f['cvss_score']) && is_numeric($f['cvss_score'])
+                          ? max(0, min(10, (float)$f['cvss_score'])) : null;
+                    try {
+                        $fstmt->execute([
+                            $job_id,
+                            mb_substr($f['title'], 0, 500),
+                            $f['description'] ?? '',
+                            $sev,
+                            $cvss,
+                            mb_substr($f['cwe_id'] ?? '', 0, 20),
+                            mb_substr($f['cve_id'] ?? '', 0, 30),
+                            mb_substr($f['affected_url'] ?? '', 0, 1000),
+                            $f['remediation'] ?? '',
+                        ]);
+                    } catch (Throwable) { /* skip a bad finding, keep the rest */ }
+                }
+            }
         } catch (Throwable $e) {
             $result['db_warning'] = $e->getMessage();
         }

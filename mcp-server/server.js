@@ -177,6 +177,7 @@ app.post('/scan/security-review', scanLimiter, async (req, res) => {
         raw_output: rawOutput,
         scan_errors: scanErrors,
         analysis: triage.analysis || triage.content || '',
+        findings: Array.isArray(triage.findings) ? triage.findings : [],
         model: triage.model || 'unknown',
         timestamp: new Date().toISOString(),
         ok: triage.ok !== false,

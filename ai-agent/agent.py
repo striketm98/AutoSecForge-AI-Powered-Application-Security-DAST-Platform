@@ -4,6 +4,7 @@ AutoSecForge AI Agent – Ollama-backed LLM with OpenAI-compatible API
 """
 
 import os
+import re
 import uuid
 import json
 import requests
@@ -31,7 +32,83 @@ Always structure your responses with:
 2. Key Findings (bullet list with severity)
 3. Recommended Actions (prioritised)
 
-Be concise, technical, and actionable."""
+Be concise, technical, and actionable.
+
+After the prose report, you MUST append a machine-readable findings block in
+EXACTLY this format (a JSON array between the markers, nothing else between them):
+
+<<<FINDINGS_JSON>>>
+[
+  {
+    "title": "short finding title",
+    "severity": "critical|high|medium|low|info",
+    "cvss_score": 0.0,
+    "cwe_id": "CWE-79 or empty",
+    "cve_id": "CVE-2021-XXXX or empty",
+    "affected_url": "host/path/port or empty",
+    "description": "what it is and why it matters",
+    "remediation": "how to fix it"
+  }
+]
+<<<END_FINDINGS>>>
+
+If the scan output shows no issues, return an empty array: []. Use only the five
+severity values listed. Never invent CVEs — leave cve_id empty if unsure."""
+
+
+def extract_findings(text: str):
+    """
+    Pull the structured findings JSON out of the model output.
+    Returns (prose_without_block, findings_list). Defensive: small models often
+    emit slightly malformed JSON, so we try hard and degrade to [] on failure.
+    """
+    if not text:
+        return text, []
+
+    block = None
+    m = re.search(r'<<<FINDINGS_JSON>>>(.*?)<<<END_FINDINGS>>>', text, re.DOTALL)
+    if m:
+        block = m.group(1)
+        prose = text[:m.start()].rstrip()
+    else:
+        # Fallback: grab the last JSON array in the text
+        arr = re.findall(r'\[\s*\{.*?\}\s*\]', text, re.DOTALL)
+        if arr:
+            block = arr[-1]
+            prose = text.replace(block, '').rstrip()
+        else:
+            return text.rstrip(), []
+
+    findings = []
+    try:
+        parsed = json.loads(block.strip())
+        if isinstance(parsed, list):
+            valid_sev = {'critical', 'high', 'medium', 'low', 'info'}
+            for f in parsed:
+                if not isinstance(f, dict) or not f.get('title'):
+                    continue
+                sev = str(f.get('severity', 'medium')).strip().lower()
+                if sev not in valid_sev:
+                    sev = 'medium'
+                try:
+                    cvss = float(f.get('cvss_score') or 0) or None
+                except (TypeError, ValueError):
+                    cvss = None
+                findings.append({
+                    'title':        str(f.get('title', ''))[:500],
+                    'severity':     sev,
+                    'cvss_score':   cvss,
+                    'cwe_id':       str(f.get('cwe_id', ''))[:20],
+                    'cve_id':       str(f.get('cve_id', ''))[:30],
+                    'affected_url': str(f.get('affected_url', ''))[:1000],
+                    'description':  str(f.get('description', '')),
+                    'remediation':  str(f.get('remediation', '')),
+                })
+    except (ValueError, TypeError):
+        # Couldn't parse — keep the prose, drop the block silently.
+        pass
+
+    return prose, findings
 
 
 def ollama_chat(messages: list, stream: bool = False) -> dict:
@@ -134,11 +211,15 @@ def security_review():
     ]
     result = ollama_chat(messages)
 
+    # Split the prose triage from the structured findings block.
+    prose, findings = extract_findings(result['content']) if result['ok'] else (result['content'], [])
+
     return jsonify(
         target=target,
         scan_type=scan_type,
         model=OLLAMA_MODEL,
-        analysis=result['content'],
+        analysis=prose,
+        findings=findings,
         ok=result['ok'],
         timestamp=datetime.utcnow().isoformat() + 'Z',
     )
