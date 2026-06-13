@@ -20,9 +20,10 @@ AutoSecForge is a self-hosted security operations dashboard that orchestrates in
 8. [Running a Security Review](#running-a-security-review)
 9. [Reporting & Export](#reporting--export)
 10. [Configuration Reference](#configuration-reference)
-11. [Troubleshooting](#troubleshooting)
-12. [Security Hardening Notes](#security-hardening-notes)
-13. [Project Structure](#project-structure)
+11. [Updating an existing deployment](#updating-an-existing-deployment)
+12. [Troubleshooting](#troubleshooting)
+13. [Security Hardening Notes](#security-hardening-notes)
+14. [Project Structure](#project-structure)
 
 ---
 
@@ -30,13 +31,16 @@ AutoSecForge is a self-hosted security operations dashboard that orchestrates in
 
 | Area | Capability |
 |---|---|
-| **AI Triage (local)** | Ollama-backed LLM analyzes raw scan output and produces an executive summary, severity-ranked findings, and remediation steps. OpenAI-compatible API (`/v1/chat/completions`) for tool interop. |
-| **Orchestrated Scanning** | One click runs nmap (network), nikto (DAST), and sqlmap (SQLi) in isolated containers, aggregates output, and feeds it to the AI agent. |
-| **Pro Dashboard** | AdminLTE 3.2 dark-indigo UI: live KPI cards, 7-day scan trend chart, scan status donut, real-time tool health grid, recent activity feed. |
+| **AI Triage (local)** | Ollama-backed LLM analyzes raw scan output and produces an executive summary, severity-ranked findings, and remediation. It also emits a **structured findings JSON** block (severity/CVSS/CWE/CVE/remediation) that is parsed and stored in the `findings` table — powering the report tables and Findings Review. OpenAI-compatible API (`/v1/chat/completions`) for tool interop. |
+| **Orchestrated Scanning** | One click runs **nmap** (network), **nikto** (DAST), **sqlmap** (SQLi), and **OWASP ZAP** (deep spider + active scan) in isolated containers, aggregates output, and feeds it to the AI agent. |
+| **Container SCA** | **Trivy** image scan from the New Security Review page — enter an image (e.g. `nginx:1.25`), get CVE findings + AI triage. |
+| **Mobile Analysis** | **MobSF** page: drag-drop an APK/IPA/XAPK → static analysis → severity-tagged findings + the native MobSF PDF, fed into the report pipeline. |
+| **Code Analysis (SAST)** | **SonarQube** page: upload a source `.zip` → `sonar-scanner` → issues mapped to findings + AI triage. |
+| **Professional Reports** | Branded **PDF** (wkhtmltopdf) and **Word `.doc`** deliverables with cover page, risk rating, severity summary, findings table, per-finding remediation, AI narrative, and raw-output appendix. Also HTML preview + `.txt`. Deliverables hub aggregates all reports. |
+| **Pro Dashboard** | AdminLTE 3.2 dark-indigo UI: live KPI cards, scan trend chart, status donut, real-time tool-health grid, recent activity feed. |
 | **RBAC** | Six roles (admin, manager, analyst, client, auditor, executive) with role-gated navigation and data scoping. |
-| **Reporting** | Per-scan reports with AI analysis + raw evidence, preview modal, one-click `.txt` export; audit log of all actions. |
-| **Tool Suite** | OWASP ZAP, SonarQube CE, MobSF, Trivy server, SQLMap API, OASM attack-surface service — all pre-wired in compose. |
-| **Safety Rails** | SSRF guards (private-IP targets rejected at both PHP and MCP layers), rate limiting, helmet headers, hardened `.htaccess`, allow-listed scan flags. |
+| **Management** | **Clients** (create/manage client accounts), **Settings** (team & access management, system info), **Compliance** (OWASP Top 10 coverage matrix + PCI/ISO/GDPR mapping), **Modules** (live service-health dashboard), **Audit Log** (full action trail), **Findings Review** (cross-scan triage with status workflow). |
+| **Safety Rails** | SSRF guards (private-IP targets rejected at both PHP and MCP layers), rate limiting, helmet headers, hardened `.htaccess`, allow-listed scan flags, zip-slip protection on uploads. |
 | **WSL2/Kali Ready** | `host.docker.internal:host-gateway` mapping; works identically on Docker Desktop, WSL2 Docker Engine, and Kali-in-WSL. |
 
 ---
@@ -54,10 +58,10 @@ AutoSecForge is a self-hosted security operations dashboard that orchestrates in
         │  AdminLTE 3.2) │
         └───────┬────────┘
                 │ POST /scan/security-review
-        ┌───────▼─────────────┐
-        │  mcp-router :6300   │── docker exec ──▶ nmap / nikto / sqlmap
-        │  (Node/Express)     │                   containers
-        └───────┬─────────────┘
+        ┌───────▼─────────────┐   docker exec   nmap / nikto / sqlmap /
+        │  mcp-router :6300   │── ───────────▶  trivy / sonar-scanner
+        │  (Node/Express)     │   REST API   ─▶ OWASP ZAP :8090
+        └───────┬─────────────┘                 SonarQube :9000
                 │ POST /v1/security-review
         ┌───────▼─────────────┐        ┌─────────────────┐
         │  ai-agent :6400     │───────▶│  ollama :11434  │
@@ -65,12 +69,18 @@ AutoSecForge is a self-hosted security operations dashboard that orchestrates in
         │  compatible API)    │        └─────────────────┘
         └─────────────────────┘
 
-  Internal-only services (no host port): ZAP · SonarQube · MobSF
-                 Trivy · OASM · SQLMap · nmap · nikto
+  app talks directly (same Docker net) to: MobSF :8000 (mobile upload)
+  Internal-only services (no host port): ZAP · SonarQube · sonar-scanner
+       MobSF · Trivy · OASM · SQLMap · nmap · nikto
 ```
 
 **Security-review data flow:**
-`scan_trigger.php` → MCP router validates target (blocks private IPs) → executes selected tools sequentially in their containers → raw output aggregated → AI agent builds a structured triage prompt → Ollama returns analysis → result persisted to `scan_jobs` → rendered in UI / exportable as report.
+`scan_trigger.php` → MCP router validates target (blocks private IPs) → executes selected tools (nmap/nikto/sqlmap via `docker exec`, ZAP via REST API) sequentially → raw output aggregated → AI agent builds a structured triage prompt → Ollama returns prose **+ structured findings JSON** → analysis persisted to `scan_jobs`, findings to `findings` → rendered in UI / exported as PDF/Word.
+
+**Other scan flows:**
+- **Container SCA:** `scan_trigger.php` (image form) → `mcp-router /scan/container` → `trivy image` → triage.
+- **Mobile:** `mobsf.php` (file upload) → MobSF REST API (`/api/v1/upload`→`/scan`→`/scorecard`) → findings + triage; native PDF proxied via `mobsf.php?pdf=<hash>`.
+- **SAST:** `sast.php` (source zip) → unzip into shared `sast-src` volume → `mcp-router /scan/sast` → `sonar-scanner` → SonarQube issues API → findings + triage.
 
 ---
 
@@ -223,7 +233,9 @@ First build takes 5–15 minutes (image pulls + builds). MySQL auto-loads [datab
 ### Step 7 — Pull a local AI model
 
 ```bash
-docker exec autosecforge-ollama ollama pull llama3
+# Small/low-RAM boxes (recommended default, ~1 GB):
+docker exec autosecforge-ollama ollama pull qwen2.5:1.5b
+# Larger machines (≥8 GB) can use llama3 instead — set OLLAMA_MODEL to match.
 ```
 
 ### Step 8 — Open the dashboard
@@ -250,11 +262,14 @@ All AI inference runs locally — nothing is sent to any cloud provider.
 
 | Model | Pull command | RAM needed | Notes |
 |---|---|---|---|
-| `llama3` (default) | `ollama pull llama3` | ~8 GB | Best balance of quality/speed |
-| `llama3.1:8b` | `ollama pull llama3.1:8b` | ~8 GB | Newer, longer context |
-| `mistral` | `ollama pull mistral` | ~6 GB | Faster, lighter |
+| `qwen2.5:1.5b` (default) | `ollama pull qwen2.5:1.5b` | ~1–2 GB | Fits a 3.8 GB box; recommended baseline |
+| `qwen2.5:0.5b` | `ollama pull qwen2.5:0.5b` | ~0.5 GB | Fallback if 1.5b is still too tight |
 | `phi3:mini` | `ollama pull phi3:mini` | ~4 GB | Low-RAM machines |
+| `mistral` | `ollama pull mistral` | ~6 GB | Faster, lighter |
+| `llama3` | `ollama pull llama3` | ~8 GB | Best quality; **OOMs on <5 GB boxes** |
 | `qwen2.5:14b` | `ollama pull qwen2.5:14b` | ~12 GB | Higher quality triage |
+
+> ⚠️ If you see `llama-server process has terminated: signal: killed` and a 500 from `/api/chat`, the model is too large for available RAM — switch to a smaller model above.
 
 Run pulls inside the container: `docker exec autosecforge-ollama ollama pull <model>`.
 
@@ -299,25 +314,35 @@ Six roles control navigation, data visibility, and actions:
    - **Network** — `nmap -sV -T4 --open` service discovery
    - **DAST** — `nikto` web server scan
    - **SQLi** — `sqlmap --batch` injection probe
-4. Click **Launch Security Review**. Progress steps display while tools run and the AI triages.
+   - **OWASP ZAP** — spider + bounded active scan (deeper, slower)
+4. Click **Run Security Review**. Progress steps display while tools run and the AI triages.
 5. Results render in-page: **AI analysis** (executive summary, findings by severity, remediation) plus a collapsible **raw tool output** panel with copy/export buttons.
-6. The job is saved to **Scanning → Scan Jobs** with full detail modal and re-scan shortcut.
+6. The job is saved to **Scanning → Scan History**; structured findings flow to **Findings Review**, and the job is exportable as a PDF/Word report.
+
+**Other scanners:**
+- **Container Image SCA (Trivy)** — the card on the same page; enter an image (`nginx:1.25`) → CVE findings + triage.
+- **Mobile Scan (MobSF)** — `Scanning → Mobile Scan`; upload an APK/IPA/XAPK. Requires `MOBSF_API_KEY`.
+- **Code Analysis (SonarQube)** — `Scanning → Code Analysis`; upload a source `.zip`. Requires `SONAR_TOKEN`.
 
 ---
 
 ## Reporting & Export
 
-- **Reporting → Reports** (`report.php`) lists every completed review as a card with target, modules, date, and status.
-- **Preview** opens the full AI analysis and raw evidence in a modal.
-- **Export** downloads a formatted `.txt` report (`?export=<job-id>`) containing header metadata, AI triage, and raw scan output — suitable for attaching to tickets or client deliverables.
-- **Audit Log** (admins/auditors) provides a tamper-evident trail of logins, scans, and exports.
-- Client-facing templates live in [Documents/](Documents/) (runbook, architecture guide).
+- **Reporting → Reports** (`report.php`) lists every completed review; **Preview** opens the AI analysis + evidence in a modal.
+- **Export** offers four formats via `?export=<job-id>&format=…`:
+  - **`pdf`** — branded PDF deliverable rendered by `wkhtmltopdf` (cover page, risk rating, severity summary, findings table, per-finding remediation, AI narrative, raw appendix). Falls back to a print-to-PDF view if the binary is unavailable.
+  - **`doc`** — Word-openable `.doc` (Office HTML) — same layout, editable.
+  - **`html`** — in-browser preview of the report.
+  - **`txt`** — plain-text for tickets.
+- **Reporting → Deliverables** (`deliverables.php`) aggregates every report with per-report download buttons and portfolio stats (reports, findings, critical/high counts).
+- **Audit Log** (`audit.php`, admins/auditors) — trail of logins, scans, exports, user/client changes.
+- The renderer lives in [src/report_render.php](src/report_render.php) and is shared by all three formats.
 
 ---
 
 ## Configuration Reference
 
-`public/.env` (mounted into the app container):
+`.env` (root, for compose/MySQL) and `public/.env` (mounted into the app) — keep the shared keys identical:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -325,12 +350,35 @@ Six roles control navigation, data visibility, and actions:
 | `DB_NAME` | `security_dashboard` | Schema name |
 | `DB_USER` / `DB_PASSWORD` | `dashboard` / *change me* | App DB credentials |
 | `DB_ROOT_PASSWORD` | *change me* | MySQL root (compose healthcheck) |
-| `OLLAMA_MODEL` | `llama3` | Model the AI agent uses |
+| `OLLAMA_MODEL` | `qwen2.5:1.5b` | Model the AI agent uses. `llama3` (8B) needs ~5–6 GB RAM; use `qwen2.5:1.5b` (~1 GB) on small/3.8 GB boxes |
 | `MCP_URL` | `http://mcp-router:6300` | Orchestrator endpoint |
 | `AI_AGENT_URL` | `http://ai-agent:6400` | AI triage endpoint |
 | `OASM_URL` | `http://oasm:6200` | Attack-surface service |
 | `SQLMAP_URL` | `http://sqlmap:6000` | SQLMap API |
-| `ZAP_API_KEY` | *change me* | ZAP daemon API key |
+| `ZAP_API_KEY` | *change me* | ZAP daemon API key (shared by the `zap` service + `mcp-router`) |
+| `MOBSF_API_KEY` | *change me* | MobSF REST API key — **must match** on the `mobsf` and `app` services; required for the Mobile Scan page |
+| `SONAR_TOKEN` | *change me* | SonarQube token for the SAST page (create in SonarQube ▸ My Account ▸ Security) |
+
+---
+
+## Updating an existing deployment
+
+When pulling a build that changes images or adds services (like the scanners + reports update), rebuild the changed images and start any new containers:
+
+```bash
+cd /opt/AutoSecForge-V.2          # your deploy path
+git pull                          # preserves your .env / public/.env (git-ignored)
+
+# add any new keys to .env: MOBSF_API_KEY, SONAR_TOKEN, OLLAMA_MODEL
+
+docker compose up -d --build app mcp-router ai-agent   # app: wkhtmltopdf+zip+upload limits;
+                                                        # mcp-router: ZAP/Trivy/SAST endpoints;
+                                                        # ai-agent: structured findings
+docker compose up -d sonar-scanner                      # new SAST exec target
+docker exec autosecforge-ollama ollama pull qwen2.5:1.5b
+```
+
+> On a 3.8 GB box, SonarQube (Elasticsearch) + Ollama together is tight — watch `docker stats` for OOM during SAST runs.
 
 ---
 
@@ -374,21 +422,34 @@ Before any non-lab deployment:
 
 ```
 AutoSecForge-V.2/
-├── docker-compose.yml        # Full 12-service stack
-├── Dockerfile                # PHP 8.3 + Apache app image
-├── database/schema.sql       # Users (RBAC), projects, scan_jobs, findings, audit_log
+├── docker-compose.yml        # Full stack (app, db, ollama, ai-agent, mcp-router,
+│                             #   nmap, nikto, sqlmap, zap, trivy, sonarqube,
+│                             #   sonar-scanner, mobsf, oasm, …)
+├── Dockerfile                # PHP 8.3 + Apache app image (wkhtmltopdf, zip, uploads)
+├── database/schema.sql       # Users (RBAC), projects, scan_jobs, findings, audit_log, clients
 ├── public/                   # Web root
 │   ├── home.php              #   Dashboard (KPIs, charts, tool health)
-│   ├── scan_trigger.php      #   Security review launcher
+│   ├── scan_trigger.php      #   Security review launcher (+ ZAP, Trivy container SCA)
+│   ├── mobsf.php             #   Mobile (APK/IPA) scan via MobSF + native PDF proxy
+│   ├── sast.php              #   Code analysis (source zip) via SonarQube
 │   ├── scan_jobs.php         #   Job history + detail modal
-│   ├── report.php            #   Reports grid + .txt export
+│   ├── review.php            #   Findings Review (filters + status workflow)
+│   ├── report.php            #   Reports + PDF/Word/HTML/TXT export
+│   ├── deliverables.php      #   Deliverables hub (all reports + downloads)
+│   ├── clients.php           #   Client account management
+│   ├── settings.php          #   Profile + team/user management + system info
+│   ├── addons.php            #   Modules — live service-health dashboard
+│   ├── checklist.php         #   Compliance — OWASP Top 10 coverage matrix
+│   ├── audit.php             #   Audit log viewer
 │   ├── api/                  #   JSON endpoints (stats, recent_scans, trigger_scan, ai_analyze)
 │   └── .htaccess             #   Security headers + PHP allow-list
 ├── views/partials/           # AdminLTE 3.2 header/footer layout
-├── src/                      # Database.php (PDO), auth.php (sessions/RBAC), helpers.php
-├── ai-agent/                 # Flask service → Ollama (triage + OpenAI-compatible API)
-├── mcp-server/               # Express orchestrator (→ mcp-router service)
+├── src/                      # Database.php (PDO), auth.php (RBAC), helpers.php (asf_audit),
+│                             #   report_render.php (shared PDF/Word/HTML renderer)
+├── ai-agent/                 # Flask service → Ollama (triage + structured findings)
+├── mcp-server/               # Express orchestrator (nmap/nikto/sqlmap/ZAP/Trivy/SAST)
 ├── tool-wrappers/            # Dockerfiles/APIs for nmap, nikto, sqlmap, oasm, pentest
+├── NOTE.md                   # Operational troubleshooting runbook
 └── Documents/                # Architecture diagrams, client runbook, SAST report
 ```
 
