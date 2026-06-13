@@ -15,6 +15,8 @@ const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 const AI_AGENT_URL = process.env.AI_AGENT_URL || 'http://ai-agent:6400';
 const ZAP_URL      = process.env.ZAP_URL      || 'http://zap:8090';
 const ZAP_API_KEY  = process.env.ZAP_API_KEY  || '';
+const SONAR_HOST   = process.env.SONAR_HOST_URL || 'http://sonarqube:9000';
+const SONAR_TOKEN  = process.env.SONAR_TOKEN    || '';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -277,6 +279,86 @@ app.post('/scan/container', scanLimiter, async (req, res) => {
         model:       triage.model || 'unknown',
         timestamp:   new Date().toISOString(),
         ok:          triage.ok !== false,
+    });
+});
+
+// ── SAST (SonarQube via sonar-scanner-cli → Ollama triage) ───────
+const SAFE_ID = /^[a-zA-Z0-9_-]{1,80}$/;
+
+app.post('/scan/sast', scanLimiter, async (req, res) => {
+    const { project, base_dir } = req.body;
+    if (!project || !SAFE_ID.test(project) || !base_dir || !SAFE_ID.test(base_dir)) {
+        return res.status(400).json({ error: 'Invalid project or base_dir (allowed: a-z A-Z 0-9 _ -).' });
+    }
+    if (!SONAR_TOKEN) {
+        return res.status(400).json({ error: 'SONAR_TOKEN is not configured. Create a token in SonarQube and set it in .env.' });
+    }
+
+    // 1) Run the scanner inside the CLI container against the shared source tree.
+    const srcPath = `/usr/src/${base_dir}`;
+    const scanCmd =
+        `cd ${srcPath} && sonar-scanner` +
+        ` -Dsonar.projectKey=${project}` +
+        ` -Dsonar.sources=.` +
+        ` -Dsonar.host.url=${SONAR_HOST}` +
+        ` -Dsonar.token=${SONAR_TOKEN}` +
+        ` -Dsonar.scm.disabled=true` +
+        ` -Dsonar.projectBaseDir=${srcPath}`;
+    const scan = await runInContainer('autosecforge-sonar-scanner', scanCmd);
+    if (!scan.success) {
+        return res.json({ error: `sonar-scanner failed: ${scan.error}` });
+    }
+
+    // 2) Wait for the Compute Engine to finish analysing (cap ~90s).
+    const auth = { headers: { Authorization: `Bearer ${SONAR_TOKEN}` }, timeout: 15_000 };
+    try {
+        for (let i = 0; i < 30; i++) {
+            await sleep(3000);
+            const act = await axios.get(`${SONAR_HOST}/api/ce/activity?component=${project}&ps=1`, auth);
+            const task = (act.data.tasks || [])[0];
+            if (task && ['SUCCESS', 'FAILED', 'CANCELED'].includes(task.status)) break;
+        }
+    } catch (_e) { /* fall through to issue fetch */ }
+
+    // 3) Fetch issues.
+    let issues = [];
+    try {
+        const r = await axios.get(
+            `${SONAR_HOST}/api/issues/search?componentKeys=${project}&ps=200&resolved=false&types=VULNERABILITY,BUG,CODE_SMELL`,
+            auth);
+        issues = r.data.issues || [];
+    } catch (e) {
+        return res.json({ error: `SonarQube issue fetch failed: ${e.message}`, scanner_log: scan.stdout });
+    }
+
+    // SonarQube severity → our scale
+    const sevMap = { BLOCKER: 'critical', CRITICAL: 'high', MAJOR: 'medium', MINOR: 'low', INFO: 'info' };
+    const findings = issues.slice(0, 200).map(it => ({
+        title:        (it.message || it.rule || 'SAST issue').slice(0, 500),
+        severity:     sevMap[it.severity] || 'medium',
+        description:  `Rule ${it.rule || ''} · type ${it.type || ''}`,
+        affected_url: it.component ? `${it.component}${it.line ? ':' + it.line : ''}` : project,
+        cwe_id: '', cve_id: '', remediation: '',
+    }));
+
+    const counts = findings.reduce((a, f) => (a[f.severity] = (a[f.severity] || 0) + 1, a), {});
+    let raw = `=== SONARQUBE SAST for ${project} ===\nIssues: ${issues.length}\n` +
+        `Severity: ${JSON.stringify(counts)}\n\n` +
+        findings.map(f => `[${f.severity.toUpperCase()}] ${f.title} (${f.affected_url})`).join('\n');
+    raw = raw.slice(0, 11000);
+
+    const triage = await aiTriage(project, 'sast', raw);
+
+    res.json({
+        target:      project,
+        scan_types:  ['sast'],
+        raw_output:  raw,
+        scan_errors: [],
+        analysis:    triage.analysis || triage.content || '',
+        findings,                     // authoritative SonarQube findings
+        model:       triage.model || 'unknown',
+        timestamp:   new Date().toISOString(),
+        ok:          true,
     });
 });
 

@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
     xfonts-75dpi \
     fontconfig \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd curl \
+    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd curl zip \
     && rm -rf /var/lib/apt/lists/*
 
 # Enable required Apache modules (ssl + rewrite + headers)
