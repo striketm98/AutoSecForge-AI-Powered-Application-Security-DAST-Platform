@@ -337,6 +337,18 @@
             </a>
           </li>
           <li class="nav-item">
+            <a href="mobsf.php" class="nav-link<?= $active('mobsf.php') ?>">
+              <i class="nav-icon fas fa-mobile-alt"></i>
+              <p>Mobile Scan</p>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="sast.php" class="nav-link<?= $active('sast.php') ?>">
+              <i class="nav-icon fas fa-code"></i>
+              <p>Code Analysis</p>
+            </a>
+          </li>
+          <li class="nav-item">
             <a href="oasm.php" class="nav-link<?= $active('oasm.php') ?>">
               <i class="nav-icon fas fa-crosshairs"></i>
               <p>Attack Surface</p>
