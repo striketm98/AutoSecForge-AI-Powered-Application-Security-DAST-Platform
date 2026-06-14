@@ -21,6 +21,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>AutoSecForge Pro | Secure Login</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+    <link rel="alternate icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/assets/img/logo.png">
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
     <!-- Font Awesome 6 (free icons) -->
@@ -103,16 +106,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-bottom: 2rem;
         }
         .logo-icon {
-            width: 64px;
-            height: 64px;
-            background: linear-gradient(135deg, #6366f1, #8b5cf6);
-            border-radius: 1.5rem;
+            width: 72px;
+            height: 72px;
+            border-radius: 1.25rem;
             display: inline-flex;
             align-items: center;
             justify-content: center;
             margin-bottom: 1rem;
-            box-shadow: 0 10px 20px -5px rgba(99,102,241,0.4);
+            box-shadow: 0 12px 24px -6px rgba(0,200,122,0.35);
         }
+        .logo-icon img { width: 72px; height: 72px; border-radius: 1.25rem; }
         .logo-icon i {
             font-size: 2.2rem;
             color: white;
@@ -311,18 +314,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="login-card">
         <div class="logo-area">
             <div class="logo-icon">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"
-                     width="36" height="36" aria-label="AutoSecForge">
-                  <path d="M60 8 L98 24 L98 58 Q98 88 60 108 Q22 88 22 58 L22 24 Z"
-                        fill="none" stroke="white" stroke-width="6"
-                        stroke-linejoin="round" stroke-linecap="round"/>
-                  <rect x="46" y="60" width="28" height="20" rx="4" fill="white"/>
-                  <path d="M50 60 L50 52 Q50 38 60 38 Q70 38 70 52 L70 60"
-                        fill="none" stroke="white" stroke-width="5"
-                        stroke-linecap="round"/>
-                  <circle cx="60" cy="68" r="3.5" fill="#6366f1"/>
-                  <rect x="58" y="68" width="4" height="6" rx="1.5" fill="#6366f1"/>
-              </svg>
+                <img src="/assets/img/logo.svg" alt="AutoSecForge" width="72" height="72">
             </div>
             <h1>AutoSecForge Pro</h1>
             <p class="subtitle">Enterprise Security Orchestration</p>

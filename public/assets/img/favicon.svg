@@ -1,4 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="8" fill="url(#grad)"/>
-  <text x="16" y="22" text-anchor="middle" fill="white" font-size="14">🛡️</text>
+<svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .bg { fill: #1a2e3b; }
+      .shield-outer { fill: #1a2e3b; stroke: #00c87a; stroke-width: 3; }
+      .shield-inner { fill: #0f1f2d; stroke: #00c87a; stroke-width: 1.5; }
+      .accent { fill: #00c87a; }
+      .accent2 { fill: #0096e0; }
+      .bolt { fill: #f5c518; }
+      .handle { fill: #8a7060; }
+      .head { fill: #a0a0b0; }
+      .lock-hole { fill: #0f1923; }
+    </style>
+  </defs>
+  <rect width="400" height="400" rx="60" class="bg"/>
+  <circle cx="200" cy="195" r="155" fill="none" stroke="#00c87a" stroke-width="1" stroke-dasharray="5 8" opacity="0.35"/>
+  <path class="shield-outer" d="M200 55 L305 100 L305 215 Q305 305 200 355 Q95 305 95 215 L95 100 Z"/>
+  <path class="shield-inner" d="M200 75 L285 112 L285 210 Q285 290 200 332 Q115 290 115 210 L115 112 Z"/>
+  <line x1="135" y1="155" x2="162" y2="155" stroke="#00c87a" stroke-width="1.5" opacity="0.5"/>
+  <line x1="162" y1="155" x2="162" y2="138" stroke="#00c87a" stroke-width="1.5" opacity="0.5"/>
+  <circle cx="162" cy="138" r="4" class="accent" opacity="0.7"/>
+  <line x1="238" y1="155" x2="265" y2="155" stroke="#00c87a" stroke-width="1.5" opacity="0.5"/>
+  <line x1="238" y1="155" x2="238" y2="138" stroke="#00c87a" stroke-width="1.5" opacity="0.5"/>
+  <circle cx="238" cy="138" r="4" class="accent2" opacity="0.7"/>
+  <path d="M176 190 L176 170 Q200 150 224 170 L224 190" fill="none" stroke="#00c87a" stroke-width="7" stroke-linecap="round"/>
+  <rect x="168" y="188" width="64" height="50" rx="8" class="accent"/>
+  <circle cx="200" cy="208" r="7" class="lock-hole"/>
+  <rect x="197" y="213" width="6" height="12" rx="2" class="lock-hole"/>
+  <rect x="194" y="248" width="12" height="50" rx="4" class="handle"/>
+  <rect x="165" y="236" width="70" height="24" rx="6" class="head"/>
+  <rect x="165" y="236" width="70" height="8" rx="5" fill="#c8c8d8" opacity="0.45"/>
+  <polygon class="bolt" points="228,248 218,266 226,266 214,288 232,264 222,264" opacity="0.92"/>
 </svg>
