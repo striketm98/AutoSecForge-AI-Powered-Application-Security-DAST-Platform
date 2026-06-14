@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><?= htmlspecialchars($page_title ?? 'AutoSecForge Pro') ?> | AutoSecForge Pro</title>
 
+  <!-- Favicons -->
+  <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
+  <link rel="alternate icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="apple-touch-icon" href="/assets/img/logo.png">
+
   <!-- Google Fonts: Inter -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -328,14 +333,8 @@
     <!-- Brand -->
     <div class="sidebar-brand">
       <a href="home.php" class="brand-link" style="display:flex;align-items:center;gap:10px;text-decoration:none;">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="30" height="30" style="flex-shrink:0;">
-          <path d="M60 12 L94 26 L94 58 Q94 84 60 100 Q26 84 26 58 L26 26 Z"
-                fill="none" stroke="white" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/>
-          <rect x="48" y="58" width="24" height="18" rx="4" fill="white"/>
-          <path d="M52 58 L52 50 Q52 42 60 42 Q68 42 68 50 L68 58" fill="none" stroke="white" stroke-width="4" stroke-linecap="round"/>
-          <circle cx="60" cy="66" r="3" fill="#6366f1"/>
-          <rect x="58.5" y="66" width="3" height="5" rx="1.5" fill="#6366f1"/>
-        </svg>
+        <img src="/assets/img/logo.svg" alt="AutoSecForge" width="32" height="32"
+             style="flex-shrink:0;border-radius:8px;">
         <span class="brand-text">AutoSecForge <span style="color:#c7d2fe;font-weight:400;font-size:.75rem;">Pro</span></span>
       </a>
     </div>
