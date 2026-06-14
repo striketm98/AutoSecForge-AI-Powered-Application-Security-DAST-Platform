@@ -125,6 +125,14 @@ def ollama_chat(messages: list, stream: bool = False) -> dict:
             json=payload,
             timeout=120,
         )
+        # A 404 from /api/chat almost always means the model isn't pulled.
+        # Surface an actionable message instead of a raw HTTP error.
+        if resp.status_code == 404:
+            return {'ok': False, 'content': (
+                f'The model "{OLLAMA_MODEL}" is not available in Ollama. '
+                f'Pull it on the host with:  ollama pull {OLLAMA_MODEL}  '
+                '(on low-RAM hosts use a small model, e.g. llama3.2:1b).'
+            )}
         resp.raise_for_status()
         data = resp.json()
         return {'ok': True, 'content': data['message']['content']}

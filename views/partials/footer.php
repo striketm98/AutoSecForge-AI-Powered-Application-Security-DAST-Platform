@@ -57,6 +57,67 @@ document.querySelectorAll('.sidebar-menu .nav-link').forEach(link => {
   if (link.href === window.location.href) link.classList.add('active');
 });
 
+// ── Notifications bell ─────────────────────────────────────────────
+(function () {
+  var badge = document.getElementById('notifBadge');
+  var list  = document.getElementById('notifList');
+  if (!badge || !list) return;
+
+  var ICONS = { success:'check-circle', warning:'exclamation-triangle',
+                danger:'times-circle', info:'info-circle' };
+  var COLORS= { success:'#16a34a', warning:'#d97706', danger:'#dc2626', info:'#2563eb' };
+
+  function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+  function timeAgo(ts){
+    var d = new Date((ts||'').replace(' ','T')+'Z'), s=(Date.now()-d.getTime())/1000;
+    if (isNaN(s)) return '';
+    if (s<60) return 'just now';
+    if (s<3600) return Math.floor(s/60)+'m ago';
+    if (s<86400) return Math.floor(s/3600)+'h ago';
+    return Math.floor(s/86400)+'d ago';
+  }
+
+  function render(data){
+    var items = (data && data.items) || [];
+    var count = (data && data.count) || 0;
+    badge.style.display = count > 0 ? '' : 'none';
+    badge.textContent   = count > 99 ? '99+' : count;
+    if (!items.length){ list.className='px-3 py-2 text-muted small'; list.textContent='No new notifications'; return; }
+    list.className = '';
+    list.innerHTML = items.map(function(n){
+      var t = n.type || 'info', ic = ICONS[t]||ICONS.info, co = COLORS[t]||COLORS.info;
+      var unread = String(n.is_read) === '0';
+      var inner =
+        '<div class="d-flex align-items-start px-3 py-2" style="gap:.6rem;'+(unread?'background:#f8faff;':'')+'">'+
+          '<i class="fas fa-'+ic+'" style="color:'+co+';margin-top:.15rem;"></i>'+
+          '<div style="flex:1;min-width:0;">'+
+            '<div style="font-weight:600;font-size:.8rem;color:#1e293b;">'+esc(n.title)+'</div>'+
+            (n.body?'<div class="text-muted" style="font-size:.72rem;">'+esc(n.body)+'</div>':'')+
+            '<div class="text-muted" style="font-size:.66rem;">'+timeAgo(n.created_at)+'</div>'+
+          '</div>'+
+        '</div>';
+      return n.link ? '<a href="'+esc(n.link)+'" class="dropdown-item p-0" style="white-space:normal;">'+inner+'</a>' : inner;
+    }).join('<div class="dropdown-divider my-0"></div>');
+  }
+
+  function poll(){
+    fetch('api/notifications.php', {headers:{'X-Requested-With':'XMLHttpRequest'}})
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(d){ if (d) render(d); })
+      .catch(function(){});
+  }
+
+  // Mark all read when the bell dropdown opens.
+  var bell = badge.closest('.nav-item');
+  if (bell) bell.addEventListener('shown.bs.dropdown', function(){
+    fetch('api/notifications.php', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'read'})}).then(function(){ badge.style.display='none'; });
+  });
+
+  poll();
+  setInterval(poll, 30000);
+})();
+
 // Toast helper
 window.toast = function(msg, type = 'success') {
   const id = 'toast_' + Date.now();

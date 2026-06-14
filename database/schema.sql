@@ -105,4 +105,57 @@ CREATE TABLE IF NOT EXISTS clients (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ── Notifications ──────────────────────────────────────────────────
+-- One row per recipient. A scan/report completion fans out into a row
+-- for the triggering user plus every admin/manager.
+CREATE TABLE IF NOT EXISTS notifications (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    user_id    INT NOT NULL,
+    type       VARCHAR(40) NOT NULL DEFAULT 'info',
+    title      VARCHAR(255) NOT NULL,
+    body       VARCHAR(500),
+    link       VARCHAR(255),
+    is_read    TINYINT(1) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_read (user_id, is_read),
+    INDEX idx_created   (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── Ideas & Feedback board ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ideas (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    user_id    INT,
+    title      VARCHAR(200) NOT NULL,
+    body       TEXT,
+    category   ENUM('idea','feedback','bug','question') NOT NULL DEFAULT 'idea',
+    status     ENUM('open','planned','in_progress','done','declined') NOT NULL DEFAULT 'open',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    INDEX idx_status   (status),
+    INDEX idx_category (category),
+    INDEX idx_created  (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS idea_comments (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    idea_id    INT NOT NULL,
+    user_id    INT,
+    body       TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (idea_id) REFERENCES ideas(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    INDEX idx_idea (idea_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS idea_votes (
+    idea_id    INT NOT NULL,
+    user_id    INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (idea_id, user_id),
+    FOREIGN KEY (idea_id) REFERENCES ideas(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET foreign_key_checks = 1;
