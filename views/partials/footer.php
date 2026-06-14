@@ -1,40 +1,59 @@
       </div><!-- /.container-fluid -->
-    </div><!-- /.content -->
-  </div><!-- /.content-wrapper -->
+    </div><!-- /.app-content -->
+  </main><!-- /.app-main -->
 
   <!-- Footer -->
-  <footer class="main-footer">
+  <footer class="app-footer">
     <div class="d-flex justify-content-between align-items-center flex-wrap">
       <div>
         <strong>AutoSecForge Pro</strong> &copy; <?= date('Y') ?> &mdash;
         Enterprise Security Orchestration Platform
-        <span class="badge badge-secondary ml-1" style="font-size:.65rem;">v12.1</span>
+        <span class="badge bg-secondary ms-1" style="font-size:.65rem;">v12.1</span>
       </div>
-      <div class="text-right d-none d-sm-block">
+      <div class="text-end d-none d-sm-block">
         Powered by
-        <i class="fas fa-robot text-indigo mx-1" style="color:var(--asf-indigo);"></i>Ollama AI
+        <i class="fas fa-robot mx-1" style="color:var(--asf-indigo);"></i>Ollama AI
         &middot;
         <i class="fab fa-docker mx-1 text-primary"></i>Docker
       </div>
     </div>
   </footer>
 
-</div><!-- /.wrapper -->
+</div><!-- /.app-wrapper -->
 
-<!-- jQuery 3 -->
+<!-- jQuery 3 (kept: some pages use $ for AJAX; Bootstrap 5 no longer needs it) -->
 <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
-<!-- Bootstrap 4 Bundle -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
-<!-- AdminLTE 3.2 -->
-<script src="https://cdn.jsdelivr.net/npm/admin-lte@3.2.0/dist/js/adminlte.min.js"></script>
+<!-- Bootstrap 5.3 bundle (includes Popper) -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<!-- AdminLTE 4 -->
+<script src="https://cdn.jsdelivr.net/npm/admin-lte@4.0.0/dist/js/adminlte.min.js"></script>
 
 <script>
+// ════════════════════════════════════════════════════════════════
+//  Bootstrap 4 → 5 data-attribute shim
+//  Content pages were written with BS4's data-toggle / data-target /
+//  data-dismiss. BS5 reads data-bs-*; its data API resolves attributes
+//  at click time via delegation, so mirroring them after load is enough
+//  to keep every modal, dropdown, tab and collapse working unchanged.
+// ════════════════════════════════════════════════════════════════
+(function () {
+  var map = { 'data-toggle':'data-bs-toggle', 'data-target':'data-bs-target',
+              'data-dismiss':'data-bs-dismiss', 'data-parent':'data-bs-parent',
+              'data-slide':'data-bs-slide', 'data-slide-to':'data-bs-slide-to',
+              'data-ride':'data-bs-ride' };
+  Object.keys(map).forEach(function (from) {
+    document.querySelectorAll('[' + from + ']').forEach(function (el) {
+      if (!el.hasAttribute(map[from])) el.setAttribute(map[from], el.getAttribute(from));
+    });
+  });
+})();
+
 // ── Global helpers ─────────────────────────────────────────────────
 window.showSpinner = () => { document.getElementById('pageSpinner').style.display = 'flex'; };
 window.hideSpinner = () => { document.getElementById('pageSpinner').style.display = 'none'; };
 
 // Active nav highlight (fallback)
-document.querySelectorAll('.nav-sidebar .nav-link').forEach(link => {
+document.querySelectorAll('.sidebar-menu .nav-link').forEach(link => {
   if (link.href === window.location.href) link.classList.add('active');
 });
 

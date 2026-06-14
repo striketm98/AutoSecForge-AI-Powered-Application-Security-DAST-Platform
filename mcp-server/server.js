@@ -128,6 +128,91 @@ async function runZap(url) {
     }
 }
 
+/**
+ * Authenticated ZAP scan. Sets up a context with form-based authentication,
+ * creates the user with the supplied credentials, then spiders + active-scans
+ * AS that user so everything behind the login is exercised.
+ *
+ *   auth = { loginUrl, username, password,
+ *            usernameField?, passwordField?, loggedInRegex? }
+ */
+async function runZapAuth(url, auth) {
+    try {
+        const ctxName = 'asf_' + Date.now();
+
+        // 1) Context + scope
+        const ctx       = await zapGet('/JSON/context/action/newContext/', { contextName: ctxName });
+        const contextId = ctx.contextId;
+        const m         = url.match(/^(https?:\/\/[^/]+)/);
+        const origin    = m ? m[1] : url;
+        const includeRe = origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '.*';
+        await zapGet('/JSON/context/action/includeInContext/', { contextName: ctxName, regex: includeRe });
+
+        // 2) Form-based authentication. The inner key/value pairs are
+        //    URL-encoded once here; axios encodes the outer layer — ZAP peels
+        //    both back to recover loginUrl and the %username%/%password% template.
+        const uField    = auth.usernameField || 'username';
+        const pField    = auth.passwordField || 'password';
+        const loginData = `${uField}=%username%&${pField}=%password%`;
+        const cfg       = 'loginUrl=' + encodeURIComponent(auth.loginUrl) +
+                          '&loginRequestData=' + encodeURIComponent(loginData);
+        await zapGet('/JSON/authentication/action/setAuthenticationMethod/', {
+            contextId, authMethodName: 'formBasedAuthentication', authMethodConfigParams: cfg,
+        });
+        if (auth.loggedInRegex) {
+            await zapGet('/JSON/authentication/action/setLoggedInIndicator/', {
+                contextId, loggedInIndicatorRegex: auth.loggedInRegex,
+            }).catch(() => {});
+        }
+
+        // 3) User + credentials
+        const u      = await zapGet('/JSON/users/action/newUser/', { contextId, name: 'asfuser' });
+        const userId = u.userId;
+        const creds  = 'username=' + encodeURIComponent(auth.username) +
+                       '&password=' + encodeURIComponent(auth.password);
+        await zapGet('/JSON/users/action/setAuthenticationCredentials/', {
+            contextId, userId, authCredentialsConfigParams: creds,
+        });
+        await zapGet('/JSON/users/action/setUserEnabled/', { contextId, userId, enabled: true });
+        await zapGet('/JSON/forcedUser/action/setForcedUser/',     { contextId, userId }).catch(() => {});
+        await zapGet('/JSON/forcedUser/action/setForcedUserModeEnabled/', { boolean: true }).catch(() => {});
+
+        // 4) Spider as user (cap ~60s)
+        const spider   = await zapGet('/JSON/spider/action/scanAsUser/', {
+            contextId, userId, url, maxChildren: 10, recurse: true });
+        const spiderId = spider.scanAsUser ?? spider.scan;
+        for (let i = 0; i < 30; i++) {
+            const s = await zapGet('/JSON/spider/view/status/', { scanId: spiderId });
+            if (parseInt(s.status) >= 100) break;
+            await sleep(2000);
+        }
+
+        // 5) Active scan as user (cap ~90s) — best effort
+        try {
+            const a       = await zapGet('/JSON/ascan/action/scanAsUser/', {
+                url, contextId, userId, recurse: true });
+            const ascanId = a.scanAsUser ?? a.scan;
+            for (let i = 0; i < 45; i++) {
+                const s = await zapGet('/JSON/ascan/view/status/', { scanId: ascanId });
+                if (parseInt(s.status) >= 100) break;
+                await sleep(2000);
+            }
+        } catch (_e) { /* keep whatever alerts we have */ }
+
+        // 6) Collect alerts
+        const data   = await zapGet('/JSON/alert/view/alerts/', { baseurl: url, start: 0, count: 200 });
+        const alerts = data.alerts || [];
+        const head   = `=== ZAP AUTHENTICATED ALERTS (${alerts.length}) for ${url} (user=${auth.username}) ===`;
+        if (!alerts.length) return { success: true, stdout: `${head}\nNo alerts reported.` };
+        const lines = alerts.slice(0, 200).map(a =>
+            `[${(a.risk || 'Info').toUpperCase()}] ${a.alert} | url=${a.url} | CWE-${a.cweid || '?'} | confidence=${a.confidence} | ${(a.description || '').slice(0, 200)}`
+        );
+        return { success: true, stdout: `${head}\n` + lines.join('\n') };
+    } catch (e) {
+        return { success: false, error: `Authenticated ZAP failed: ${e.message}` };
+    }
+}
+
 // ── Trivy (container/filesystem SCA) ─────────────────────────────
 // Image names don't fit the host-target validator, so guard separately.
 const IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\/-]{0,200}(:[a-zA-Z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$/;
@@ -186,10 +271,28 @@ app.post('/scan/sqli', scanLimiter, async (req, res) => {
 
 // ── Security Review (orchestrated: nmap + nikto → Ollama triage) ──
 app.post('/scan/security-review', scanLimiter, async (req, res) => {
-    const { target, scan_types } = req.body;
+    const { target, scan_types, zap_auth } = req.body;
 
     if (!validateTarget(target)) {
         return res.status(400).json({ error: 'Invalid or private target.' });
+    }
+
+    // Optional authenticated-ZAP credentials. Validate the login URL the same
+    // way as any other target (public, well-formed) before trusting it.
+    let zapAuth = null;
+    if (zap_auth && typeof zap_auth === 'object'
+        && zap_auth.loginUrl && zap_auth.username && zap_auth.password) {
+        const lh = String(zap_auth.loginUrl).replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+        if (URL_RE.test(zap_auth.loginUrl) && !PRIVATE_IP.test(lh)) {
+            zapAuth = {
+                loginUrl:      String(zap_auth.loginUrl),
+                username:      String(zap_auth.username),
+                password:      String(zap_auth.password),
+                usernameField: zap_auth.usernameField ? String(zap_auth.usernameField) : 'username',
+                passwordField: zap_auth.passwordField ? String(zap_auth.passwordField) : 'password',
+                loggedInRegex: zap_auth.loggedInRegex ? String(zap_auth.loggedInRegex) : '',
+            };
+        }
     }
 
     const types = Array.isArray(scan_types) && scan_types.length
@@ -230,8 +333,8 @@ app.post('/scan/security-review', scanLimiter, async (req, res) => {
             }
             case 'zap': {
                 const url = target.startsWith('http') ? target : `http://${target}`;
-                result = await runZap(url);
-                rawParts.push(`=== OWASP ZAP (dast) ===\n${result.stdout || result.error}`);
+                result = zapAuth ? await runZapAuth(url, zapAuth) : await runZap(url);
+                rawParts.push(`=== OWASP ZAP (${zapAuth ? 'authenticated ' : ''}dast) ===\n${result.stdout || result.error}`);
                 break;
             }
         }

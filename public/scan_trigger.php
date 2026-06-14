@@ -91,7 +91,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
     $env     = @parse_ini_file('/var/www/html/.env', false, INI_SCANNER_RAW) ?: [];
     $mcp_url = rtrim($env['MCP_URL'] ?? 'http://mcp-hackstrike:6300', '/');
 
-    $payload = json_encode(['target'=>$target, 'scan_types'=>$scan_types]);
+    // Optional authenticated-ZAP credentials (only when ZAP is selected).
+    $payloadArr = ['target'=>$target, 'scan_types'=>$scan_types];
+    if (in_array('zap', $scan_types, true)) {
+        $loginUrl = trim($_POST['zap_login_url'] ?? '');
+        $zuser    = trim($_POST['zap_username']  ?? '');
+        $zpass    = (string)($_POST['zap_password'] ?? '');
+        if ($loginUrl !== '' && $zuser !== '' && $zpass !== '') {
+            $lh = parse_url($loginUrl, PHP_URL_HOST) ?: '';
+            $bad = false;
+            foreach (['127.','10.','192.168.','172.16.','172.17.','172.18.','172.19.','172.2','172.3','169.254.','::1'] as $p) {
+                if (str_starts_with($lh, $p)) { $bad = true; break; }
+            }
+            if ($lh === 'localhost' || $lh === '') $bad = true;
+            if (!$bad) {
+                $payloadArr['zap_auth'] = [
+                    'loginUrl'      => $loginUrl,
+                    'username'      => $zuser,
+                    'password'      => $zpass,
+                    'usernameField' => trim($_POST['zap_user_field'] ?? '') ?: 'username',
+                    'passwordField' => trim($_POST['zap_pass_field'] ?? '') ?: 'password',
+                    'loggedInRegex' => trim($_POST['zap_loggedin'] ?? ''),
+                ];
+            }
+        }
+    }
+
+    $payload = json_encode($payloadArr);
     $ch = curl_init("$mcp_url/scan/security-review");
     curl_setopt_array($ch, [
         CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>$payload,
@@ -255,6 +281,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
                   <div style="font-size:.72rem;color:#64748b;">spider + active scan (slower, thorough)</div>
                 </div>
                 <input type="checkbox" name="scan_types[]" value="zap" class="ml-2" style="width:16px;height:16px;accent-color:#06b6d4;">
+              </div>
+            </div>
+
+            <!-- Authenticated-ZAP credentials (revealed when ZAP is selected) -->
+            <div id="zapAuthPanel" class="d-none border rounded p-3 mb-2" style="background:#f0fdff;border-color:#a5f3fc !important;">
+              <div class="d-flex align-items-center mb-2">
+                <i class="fas fa-user-lock mr-2" style="color:#06b6d4;"></i>
+                <strong style="font-size:.78rem;color:#155e75;">Authenticated Scan (optional)</strong>
+              </div>
+              <small class="text-muted d-block mb-2" style="font-size:.72rem;">
+                Provide login details and ZAP will authenticate, then scan everything behind the login.
+                Leave blank for an unauthenticated scan.
+              </small>
+              <div class="form-group mb-2">
+                <input type="url" class="form-control form-control-sm" name="zap_login_url"
+                       placeholder="Login form URL — https://target/login" autocomplete="off" style="border-radius:.5rem;">
+              </div>
+              <div class="form-row" style="gap:.5rem;">
+                <div class="form-group mb-2" style="flex:1;min-width:120px;">
+                  <input type="text" class="form-control form-control-sm" name="zap_username"
+                         placeholder="Username" autocomplete="off" style="border-radius:.5rem;">
+                </div>
+                <div class="form-group mb-2" style="flex:1;min-width:120px;">
+                  <input type="password" class="form-control form-control-sm" name="zap_password"
+                         placeholder="Password" autocomplete="new-password" style="border-radius:.5rem;">
+                </div>
+              </div>
+              <a class="small" data-toggle="collapse" href="#zapAuthAdv" style="font-size:.72rem;color:#0891b2;cursor:pointer;">
+                <i class="fas fa-cog mr-1"></i>Advanced field mapping
+              </a>
+              <div class="collapse mt-2" id="zapAuthAdv">
+                <div class="form-row" style="gap:.5rem;">
+                  <div class="form-group mb-2" style="flex:1;min-width:110px;">
+                    <label class="text-muted mb-1" style="font-size:.68rem;">Username field name</label>
+                    <input type="text" class="form-control form-control-sm" name="zap_user_field" placeholder="username" style="border-radius:.5rem;">
+                  </div>
+                  <div class="form-group mb-2" style="flex:1;min-width:110px;">
+                    <label class="text-muted mb-1" style="font-size:.68rem;">Password field name</label>
+                    <input type="text" class="form-control form-control-sm" name="zap_pass_field" placeholder="password" style="border-radius:.5rem;">
+                  </div>
+                </div>
+                <div class="form-group mb-0">
+                  <label class="text-muted mb-1" style="font-size:.68rem;">Logged-in indicator (regex, optional)</label>
+                  <input type="text" class="form-control form-control-sm" name="zap_loggedin" placeholder="e.g. \\bLogout\\b or /account" style="border-radius:.5rem;">
+                </div>
               </div>
             </div>
           </div>
@@ -427,11 +498,19 @@ document.querySelectorAll('.scan-module-option').forEach(wrap => {
   };
   applyStyle();
   card.addEventListener('click', e => {
-    if (e.target !== cb) cb.checked = !cb.checked;
+    if (e.target !== cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); }
     applyStyle();
   });
   cb.addEventListener('change', applyStyle);
 });
+
+// Reveal the authenticated-scan panel only when ZAP is selected
+const zapCb = document.querySelector('input[name="scan_types[]"][value="zap"]');
+if (zapCb) {
+  const syncZapPanel = () => document.getElementById('zapAuthPanel').classList.toggle('d-none', !zapCb.checked);
+  zapCb.addEventListener('change', syncZapPanel);
+  syncZapPanel();
+}
 
 // ── Form submit ───────────────────────────────────────────────────
 const steps = [
@@ -480,6 +559,12 @@ document.getElementById('scanForm').addEventListener('submit', async function(e)
   const fd = new FormData();
   fd.append('target', target);
   types.forEach(t => fd.append('scan_types[]', t));
+
+  // Include authenticated-ZAP credentials when ZAP is selected
+  if (types.includes('zap')) {
+    ['zap_login_url','zap_username','zap_password','zap_user_field','zap_pass_field','zap_loggedin']
+      .forEach(n => { const el = document.querySelector(`[name="${n}"]`); if (el) fd.append(n, el.value); });
+  }
 
   try {
     const resp = await fetch('scan_trigger.php', {
