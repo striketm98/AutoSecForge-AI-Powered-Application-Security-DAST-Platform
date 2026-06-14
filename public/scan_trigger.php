@@ -50,6 +50,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
             $job_id = $pdo->lastInsertId();
             $result['job_id'] = $job_id;
             asf_audit('scan.container', "image=$image job=$job_id");
+            asf_notify(
+                asf_scan_recipients(isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null),
+                'Container scan report ready', "$image",
+                'report.php?export=' . $job_id . '&format=html',
+                ($result['ok'] ?? true) ? 'success' : 'warning'
+            );
             if (!empty($result['findings']) && is_array($result['findings'])) {
                 $fstmt = $pdo->prepare(
                     'INSERT INTO findings (scan_job_id, title, description, severity, cvss_score, cwe_id, cve_id, affected_url, remediation)
@@ -151,6 +157,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
             $job_id = $pdo->lastInsertId();
             $result['job_id'] = $job_id;
             asf_audit('scan.security_review', 'target=' . $target . ' types=' . implode(',', $scan_types) . " job=$job_id");
+            asf_notify(
+                asf_scan_recipients(isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null),
+                'Scan report ready',
+                $target . ' — ' . implode(', ', $scan_types),
+                'report.php?export=' . $job_id . '&format=html',
+                $result['ok'] ? 'success' : 'warning'
+            );
 
             // Persist structured findings (from the AI agent) for pro reports.
             if (!empty($result['findings']) && is_array($result['findings'])) {

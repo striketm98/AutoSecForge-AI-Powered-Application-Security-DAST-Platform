@@ -1,5 +1,6 @@
 <?php
 require_once '../../src/auth.php';
+require_once '../../src/helpers.php';
 require_auth();
 header('Content-Type: application/json');
 
@@ -50,7 +51,18 @@ if (empty($result['error'])) {
             $result['model'] ?? '', $_SESSION['user_id'] ?? null,
             $result['ok'] ? 'completed' : 'partial',
         ]);
-        $result['job_id'] = $pdo->lastInsertId();
+        $job_id = $pdo->lastInsertId();
+        $result['job_id'] = $job_id;
+
+        // Notify the triggering user + all admins/managers that the report is ready.
+        $triggeredBy = $_SESSION['user_id'] ?? null;
+        asf_notify(
+            asf_scan_recipients($triggeredBy ? (int)$triggeredBy : null),
+            'Scan report ready',
+            $target . ' — ' . implode(', ', $scan_types),
+            'report.php?export=' . $job_id . '&format=html',
+            $result['ok'] ? 'success' : 'warning'
+        );
     } catch (Throwable $e) {
         $result['db_warning'] = $e->getMessage();
     }

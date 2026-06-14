@@ -413,6 +413,14 @@
             </a>
           </li>
 
+          <li class="nav-header">Collaboration</li>
+          <li class="nav-item">
+            <a href="ideas.php" class="nav-link<?= $active('ideas.php') ?>">
+              <i class="nav-icon fas fa-lightbulb"></i>
+              <p>Ideas &amp; Feedback</p>
+            </a>
+          </li>
+
           <?php if (in_array($_SESSION['user_role'] ?? '', ['admin','manager'])): ?>
           <li class="nav-header">Management</li>
           <li class="nav-item">
