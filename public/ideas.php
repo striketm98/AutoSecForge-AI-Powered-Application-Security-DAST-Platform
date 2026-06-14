@@ -15,19 +15,51 @@ require_once '../views/partials/header.php';
   </button>
 </div>
 
-<!-- Filters -->
+<!-- Stat cards -->
+<div class="row" id="ideaStats">
+  <?php
+  $cards = [
+    ['kTotal','Total Posts','fa-comments','#6366f1'],
+    ['kOpen','Open','fa-folder-open','#64748b'],
+    ['kPlanned','Planned','fa-clipboard-list','#0ea5e9'],
+    ['kDone','Done','fa-circle-check','#16a34a'],
+  ];
+  foreach ($cards as [$id,$label,$icon,$col]): ?>
+  <div class="col-6 col-md-3 mb-3"><div class="card h-100"><div class="card-body d-flex align-items-center">
+    <div style="width:42px;height:42px;border-radius:.7rem;background:<?=$col?>1a;display:flex;align-items:center;justify-content:center;margin-right:.75rem;"><i class="fas <?=$icon?>" style="color:<?=$col?>;"></i></div>
+    <div><div id="<?=$id?>" style="font-size:1.4rem;font-weight:800;color:#1e293b;line-height:1;">0</div><div class="text-muted" style="font-size:.72rem;"><?=$label?></div></div>
+  </div></div></div>
+  <?php endforeach; ?>
+</div>
+
+<!-- Toolbar -->
 <div class="card mb-3">
-  <div class="card-body py-2 d-flex flex-wrap align-items-center" style="gap:.5rem;">
-    <div class="btn-group btn-group-sm" role="group" id="statusFilter">
-      <button class="btn btn-outline-secondary active" data-status="">All</button>
-      <button class="btn btn-outline-secondary" data-status="open">Open</button>
-      <button class="btn btn-outline-secondary" data-status="planned">Planned</button>
-      <button class="btn btn-outline-secondary" data-status="in_progress">In Progress</button>
-      <button class="btn btn-outline-secondary" data-status="done">Done</button>
+  <div class="card-body py-2">
+    <div class="d-flex flex-wrap align-items-center" style="gap:.5rem;">
+      <div class="position-relative" style="flex:1 1 220px;max-width:320px;">
+        <i class="fas fa-search position-absolute text-muted" style="left:.7rem;top:50%;transform:translateY(-50%);font-size:.8rem;"></i>
+        <input type="text" id="ideaSearch" class="form-control form-control-sm" placeholder="Search posts…" style="padding-left:2rem;border-radius:.5rem;">
+      </div>
+      <div class="btn-group btn-group-sm" role="group" id="sortToggle">
+        <button class="btn btn-outline-secondary active" data-sort="top"><i class="fas fa-fire me-1"></i>Top</button>
+        <button class="btn btn-outline-secondary" data-sort="new"><i class="fas fa-clock me-1"></i>New</button>
+      </div>
     </div>
-    <div class="ms-auto btn-group btn-group-sm" role="group" id="sortToggle">
-      <button class="btn btn-outline-secondary active" data-sort="top"><i class="fas fa-fire me-1"></i>Top</button>
-      <button class="btn btn-outline-secondary" data-sort="new"><i class="fas fa-clock me-1"></i>New</button>
+    <div class="d-flex flex-wrap align-items-center mt-2" style="gap:.5rem;">
+      <div class="btn-group btn-group-sm" role="group" id="statusFilter">
+        <button class="btn btn-outline-secondary active" data-status="">All</button>
+        <button class="btn btn-outline-secondary" data-status="open">Open</button>
+        <button class="btn btn-outline-secondary" data-status="planned">Planned</button>
+        <button class="btn btn-outline-secondary" data-status="in_progress">In Progress</button>
+        <button class="btn btn-outline-secondary" data-status="done">Done</button>
+      </div>
+      <div class="btn-group btn-group-sm ms-auto" role="group" id="catFilter">
+        <button class="btn btn-outline-secondary active" data-cat="">All types</button>
+        <button class="btn btn-outline-secondary" data-cat="idea"><i class="fas fa-lightbulb me-1" style="color:#6366f1;"></i>Ideas</button>
+        <button class="btn btn-outline-secondary" data-cat="feedback"><i class="fas fa-comment-dots me-1" style="color:#0ea5e9;"></i>Feedback</button>
+        <button class="btn btn-outline-secondary" data-cat="bug"><i class="fas fa-bug me-1" style="color:#dc2626;"></i>Bugs</button>
+        <button class="btn btn-outline-secondary" data-cat="question"><i class="fas fa-circle-question me-1" style="color:#d97706;"></i>Q&amp;A</button>
+      </div>
     </div>
   </div>
 </div>
@@ -74,7 +106,8 @@ $boot = json_encode(['isManager' => $is_manager, 'me' => $me, 'openId' => isset(
 $page_scripts = <<<JS
 <script>
 const ASF = $boot;
-let curStatus = '', curSort = 'top';
+let curStatus = '', curCat = '', curSort = 'top', curSearch = '';
+let allItems = [];
 
 const CAT = {
   idea:{i:'lightbulb',c:'#6366f1',l:'Idea'}, feedback:{i:'comment-dots',c:'#0ea5e9',l:'Feedback'},
@@ -129,16 +162,40 @@ function card(it){
     '</div></div></div>';
 }
 
+function updateStats(){
+  const by = s => allItems.filter(i=>i.status===s).length;
+  document.getElementById('kTotal').textContent   = allItems.length;
+  document.getElementById('kOpen').textContent    = by('open');
+  document.getElementById('kPlanned').textContent = by('planned') + by('in_progress');
+  document.getElementById('kDone').textContent    = by('done');
+}
+
+function applyFilters(){
+  const el = document.getElementById('ideaList');
+  let items = allItems.slice();
+  if (curStatus) items = items.filter(i=>i.status===curStatus);
+  if (curCat)    items = items.filter(i=>i.category===curCat);
+  if (curSearch){
+    const q = curSearch.toLowerCase();
+    items = items.filter(i=>((i.title||'')+' '+(i.body||'')+' '+(i.author||'')).toLowerCase().includes(q));
+  }
+  if (curSort==='new') items.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  else items.sort((a,b)=>(+b.votes - +a.votes) || (b.created_at||'').localeCompare(a.created_at||''));
+
+  if (!items.length){
+    const empty = allItems.length ? 'No posts match your filters.' : 'No posts yet. Be the first to share an idea.';
+    el.innerHTML='<div class="card"><div class="card-body text-center text-muted py-5">'+
+      '<i class="fas fa-lightbulb mb-2" style="font-size:1.6rem;color:#cbd5e1;"></i><div>'+empty+'</div></div></div>';
+    return;
+  }
+  el.innerHTML = items.map(card).join('');
+}
+
 function load(){
-  const q = new URLSearchParams();
-  if (curStatus) q.set('status', curStatus);
-  q.set('sort', curSort);
-  fetch('api/ideas.php?'+q.toString()).then(r=>r.json()).then(d=>{
-    const el = document.getElementById('ideaList');
-    const items = (d&&d.items)||[];
-    if (!items.length){ el.innerHTML='<div class="card"><div class="card-body text-center text-muted py-5">'+
-      '<i class="fas fa-lightbulb mb-2" style="font-size:1.6rem;color:#cbd5e1;"></i><div>No posts yet. Be the first to share an idea.</div></div></div>'; return; }
-    el.innerHTML = items.map(card).join('');
+  fetch('api/ideas.php').then(r=>r.json()).then(d=>{
+    allItems = (d&&d.items)||[];
+    updateStats();
+    applyFilters();
   });
 }
 
@@ -154,19 +211,25 @@ document.getElementById('ideaList').addEventListener('click', e=>{
 });
 document.getElementById('ideaList').addEventListener('change', e=>{
   const s = e.target.closest('.asf-status');
-  if (s){ post({action:'status', idea_id:+s.dataset.id, status:s.value}).then(()=>{ if(window.toast) toast('Status updated','success'); }); }
+  if (s){ post({action:'status', idea_id:+s.dataset.id, status:s.value}).then(()=>{ if(window.toast) toast('Status updated','success'); load(); }); }
 });
 
-// Filters
-document.getElementById('statusFilter').addEventListener('click', e=>{
-  const b=e.target.closest('button'); if(!b)return;
-  document.querySelectorAll('#statusFilter button').forEach(x=>x.classList.remove('active'));
-  b.classList.add('active'); curStatus=b.dataset.status; load();
-});
-document.getElementById('sortToggle').addEventListener('click', e=>{
-  const b=e.target.closest('button'); if(!b)return;
-  document.querySelectorAll('#sortToggle button').forEach(x=>x.classList.remove('active'));
-  b.classList.add('active'); curSort=b.dataset.sort; load();
+// Filters (client-side — no refetch)
+function wireGroup(id, attr, set){
+  document.getElementById(id).addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b)return;
+    document.querySelectorAll('#'+id+' button').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active'); set(b.dataset[attr]); applyFilters();
+  });
+}
+wireGroup('statusFilter','status', v=>curStatus=v);
+wireGroup('catFilter','cat',      v=>curCat=v);
+wireGroup('sortToggle','sort',    v=>curSort=v);
+
+let searchTimer;
+document.getElementById('ideaSearch').addEventListener('input', e=>{
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(()=>{ curSearch=e.target.value.trim(); applyFilters(); }, 180);
 });
 
 // Submit new idea
