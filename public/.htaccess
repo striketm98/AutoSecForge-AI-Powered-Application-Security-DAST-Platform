@@ -30,11 +30,11 @@ Options -Indexes
 </FilesMatch>
 
 # Allow known public pages
-<FilesMatch "^(index|login|home|dashboard|logout|change_password|scan_trigger|scan_jobs|report|clients|checklist|audit|addons|settings|review|deliverables|oasm|export|import|mobsf|sast)\.php$">
+<FilesMatch "^(index|login|home|dashboard|logout|change_password|scan_trigger|scan_jobs|report|clients|checklist|audit|addons|settings|review|deliverables|oasm|export|import|mobsf|sast|ideas)\.php$">
     Require all granted
 </FilesMatch>
 
 # Allow API endpoints
-<FilesMatch "^(stats|recent_scans|trigger_scan|ai_analyze|findings)\.php$">
+<FilesMatch "^(stats|recent_scans|trigger_scan|ai_analyze|findings|ideas|notifications)\.php$">
     Require all granted
 </FilesMatch>
