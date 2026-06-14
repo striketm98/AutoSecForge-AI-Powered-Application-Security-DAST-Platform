@@ -44,6 +44,18 @@
     .font-italic{font-style:italic!important}
     .btn-block{display:block;width:100%}
     .form-group{margin-bottom:1rem}
+    /* BS5 dropped .form-inline (was an inline flex row of controls) */
+    .form-inline{display:flex;flex-flow:row wrap;align-items:center}
+    .form-inline .form-control,.form-inline .form-select{display:inline-block;width:auto}
+    /* BS5 needs .form-select for the chevron; pages still using .form-control
+       on a <select> would render as a bare box — re-apply the select styling. */
+    select.form-control{
+      -webkit-appearance:none;-moz-appearance:none;appearance:none;
+      padding-right:2.25rem;
+      background-image:url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23343a40' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+      background-repeat:no-repeat;background-position:right .75rem center;background-size:16px 12px;
+    }
+    select.form-control.form-control-sm{padding-right:2rem;background-position:right .5rem center;background-size:14px 10px}
     .form-row{display:flex;flex-wrap:wrap;margin-right:-5px;margin-left:-5px}
     .input-group-prepend,.input-group-append{display:flex;align-items:stretch}
     .no-gutters{margin-right:0;margin-left:0}
