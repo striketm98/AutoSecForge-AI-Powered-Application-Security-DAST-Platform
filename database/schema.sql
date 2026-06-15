@@ -53,11 +53,14 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
     triggered_by INT,
     status       ENUM('completed','partial','failed') DEFAULT 'completed',
     project_id   INT,
+    client_id    INT,                       -- client this report belongs to (role='client')
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (triggered_by) REFERENCES users(id)    ON DELETE SET NULL,
     FOREIGN KEY (project_id)   REFERENCES projects(id) ON DELETE SET NULL,
+    FOREIGN KEY (client_id)    REFERENCES users(id)    ON DELETE SET NULL,
     INDEX idx_status (status),
     INDEX idx_created (created_at),
+    INDEX idx_client  (client_id),
     INDEX idx_target  (target(64))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

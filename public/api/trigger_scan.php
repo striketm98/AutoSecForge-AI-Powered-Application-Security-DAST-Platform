@@ -13,6 +13,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $input = json_decode(file_get_contents('php://input'), true) ?? [];
 $target     = trim($input['target'] ?? '');
 $scan_types = array_values(array_filter((array)($input['scan_types'] ?? ['network'])));
+$client_id  = asf_valid_client_id($input['client_id'] ?? null);
 
 if (!$target) { echo json_encode(['error'=>'target required']); exit; }
 
@@ -42,22 +43,22 @@ if (empty($result['error'])) {
     try {
         $pdo  = Database::getInstance();
         $stmt = $pdo->prepare(
-            'INSERT INTO scan_jobs (target, scan_types, raw_output, analysis, model, triggered_by, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO scan_jobs (target, scan_types, raw_output, analysis, model, triggered_by, client_id, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $target, implode(',', $scan_types),
             $result['raw_output'] ?? '', $result['analysis'] ?? '',
-            $result['model'] ?? '', $_SESSION['user_id'] ?? null,
+            $result['model'] ?? '', $_SESSION['user_id'] ?? null, $client_id,
             $result['ok'] ? 'completed' : 'partial',
         ]);
         $job_id = $pdo->lastInsertId();
         $result['job_id'] = $job_id;
 
-        // Notify the triggering user + all admins/managers that the report is ready.
+        // Notify the triggering user + all admins/managers (+ the scoped client).
         $triggeredBy = $_SESSION['user_id'] ?? null;
         asf_notify(
-            asf_scan_recipients($triggeredBy ? (int)$triggeredBy : null),
+            asf_scan_recipients($triggeredBy ? (int)$triggeredBy : null, $client_id),
             'Scan report ready',
             $target . ' — ' . implode(', ', $scan_types),
             'report.php?export=' . $job_id . '&format=html',

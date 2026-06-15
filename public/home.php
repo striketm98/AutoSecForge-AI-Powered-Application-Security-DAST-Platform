@@ -1,6 +1,8 @@
 <?php
 require_once '../src/auth.php';
 require_auth();
+// Clients have no staff dashboard — send them straight to their reports.
+if (($_SESSION['user_role'] ?? '') === 'client') { header('Location: report.php'); exit; }
 $page_title = 'Dashboard';
 
 // ── Fetch live stats ───────────────────────────────────────────────
