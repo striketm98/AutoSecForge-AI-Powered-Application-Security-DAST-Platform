@@ -118,7 +118,8 @@ const ST = {
   in_progress:{l:'In Progress',c:'#0ea5e9'}, done:{l:'Done',c:'#16a34a'}, declined:{l:'Declined',c:'#94a3b8'}
 };
 const STATUSES = ['open','planned','in_progress','done','declined'];
-const esc = s => { const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; };
+const ENT={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+const esc = s => (s==null?'':String(s)).replace(/[&<>"']/g, c => ENT[c]);
 
 function ago(ts){
   const d=new Date((ts||'').replace(' ','T')+'Z'), s=(Date.now()-d.getTime())/1000;
