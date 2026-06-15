@@ -12,13 +12,16 @@ $env = @parse_ini_file('/var/www/html/.env', false, INI_SCANNER_RAW) ?: [];
 $mcp = rtrim($env['MCP_URL'] ?? 'http://mcp-router:6300', '/');
 $ai  = rtrim($env['AI_AGENT_URL'] ?? 'http://ai-agent:6400', '/');
 $oasm= rtrim($env['OASM_URL'] ?? 'http://oasm:6200', '/');
+// Ping ZAP's API (with key) so "Online" means actually drivable, not just a
+// listening port. A cold ZAP daemon takes ~60-120s to answer.
+$zapUrl = 'http://zap:8090/JSON/core/view/version/?apikey=' . rawurlencode($env['ZAP_API_KEY'] ?? '');
 
 // Modules that expose an HTTP health endpoint → pinged in parallel below.
 $http_modules = [
     ['Ollama LLM',  'AI Engine',     'fa-robot',        '#6366f1', 'http://ollama:11434/api/tags',        'Local large-language model serving AI triage.'],
     ['AI Agent',    'AI Engine',     'fa-brain',        '#8b5cf6', "$ai/health",                          'Ollama-backed triage & structured-findings API.'],
     ['MCP Router',  'Orchestration', 'fa-diagram-project','#0ea5e9', "$mcp/health",                       'HackStrike orchestrator — drives the scanners.'],
-    ['OWASP ZAP',   'Web DAST',      'fa-bug',          '#06b6d4', 'http://zap:8090/',                     'Dynamic web app scanner (spider + active scan).'],
+    ['OWASP ZAP',   'Web DAST',      'fa-bug',          '#06b6d4', $zapUrl,                                'Dynamic web app scanner (spider + active scan).'],
     ['Trivy',       'Container SCA', 'fa-cube',         '#0891b2', 'http://trivy:8081/healthz',            'Container & filesystem CVE scanner.'],
     ['SonarQube',   'Code SAST',     'fa-code',         '#16a34a', 'http://sonarqube:9000/api/system/status','Static application security testing.'],
     ['MobSF',       'Mobile',        'fa-mobile-alt',   '#d97706', 'http://mobsf:8000/',                   'Mobile app (APK/IPA) static analysis.'],
