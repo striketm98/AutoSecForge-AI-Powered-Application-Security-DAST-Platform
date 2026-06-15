@@ -61,6 +61,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
 
     $target = trim($_POST['target'] ?? '');
     if ($target === '') { echo json_encode(['error'=>'Target is required.']); exit; }
+    $client_id = asf_valid_client_id($_POST['client_id'] ?? null);
 
     // SSRF guard — public hosts/IPs only
     $host = parse_url(strpos($target,'http')===0 ? $target : "http://$target", PHP_URL_HOST) ?: $target;
@@ -123,9 +124,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
 
     usort($ports, fn($a,$b)=>$a['port']<=>$b['port']);
 
+    // ── OASM service: passive subdomains + DNS + HTTP header-gap findings ──
+    $oasm_url = rtrim(getenv('OASM_URL') ?: ($env['OASM_URL'] ?? 'http://oasm:6200'), '/');
+    $oasm = ['subdomains'=>[], 'dns'=>[], 'http'=>[], 'findings'=>[]];
+    $och = curl_init("$oasm_url/discover");
+    curl_setopt_array($och, [
+        CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['target'=>$resolved]),
+        CURLOPT_HTTPHEADER=>['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER=>true, CURLOPT_TIMEOUT=>60,
+    ]);
+    $oraw = curl_exec($och); curl_close($och);
+    if ($oraw) {
+        $od = json_decode($oraw, true);
+        if (is_array($od) && empty($od['error'])) $oasm = array_merge($oasm, $od);
+    }
+    $surface_findings = is_array($oasm['findings'] ?? null) ? $oasm['findings'] : [];
+
     $sevRank = ['critical'=>0,'high'=>1,'medium'=>2,'low'=>3,'info'=>4];
     $counts  = ['critical'=>0,'high'=>0,'medium'=>0,'low'=>0,'info'=>0];
     foreach ($ports as $p) { $counts[$p['severity']] = ($counts[$p['severity']] ?? 0) + 1; }
+    foreach ($surface_findings as $f) {
+        $s = $f['severity'] ?? 'info'; $counts[$s] = ($counts[$s] ?? 0) + 1;
+    }
     $risky = $counts['critical']+$counts['high']+$counts['medium'];
 
     // ── Build a plain-text surface summary (stored as the job's "analysis") ──
@@ -141,6 +161,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
     if ($risky) {
         $lines[] = ''; $lines[] = 'Recommendation: close or firewall every service that does not need to be public.';
     }
+
+    // OASM discovery summary
+    if (!empty($oasm['subdomains'])) {
+        $lines[] = ''; $lines[] = 'Subdomains (certificate transparency): ' . count($oasm['subdomains']);
+        foreach (array_slice($oasm['subdomains'], 0, 40) as $s) $lines[] = '  • ' . $s;
+        if (count($oasm['subdomains']) > 40) $lines[] = '  … and ' . (count($oasm['subdomains']) - 40) . ' more';
+    }
+    if (!empty($oasm['dns'])) {
+        $lines[] = ''; $lines[] = 'DNS records:';
+        foreach ($oasm['dns'] as $rt => $vals) {
+            if (!empty($vals)) $lines[] = sprintf('  %-5s %s', $rt, implode(', ', (array)$vals));
+        }
+    }
+    if (!empty($oasm['http']['server'])) {
+        $lines[] = ''; $lines[] = 'HTTP server banner: ' . $oasm['http']['server'];
+    }
+    if ($surface_findings) {
+        $lines[] = ''; $lines[] = 'Security header gaps: ' . count($surface_findings) . ' (see findings).';
+    }
     $analysis = implode("\n", $lines);
 
     // ── Persist job + risk findings ──
@@ -148,13 +187,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
     try {
         $pdo  = Database::getInstance();
         $stmt = $pdo->prepare(
-            'INSERT INTO scan_jobs (target, scan_types, raw_output, analysis, model, triggered_by, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO scan_jobs (target, scan_types, raw_output, analysis, model, triggered_by, client_id, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
         );
-        $stmt->execute([$resolved, 'attack_surface', $stdout, $analysis, 'nmap -sV',
-                        $_SESSION['user_id'] ?? null, 'completed']);
+        $stmt->execute([$resolved, 'attack_surface', $stdout, $analysis, 'nmap + oasm',
+                        $_SESSION['user_id'] ?? null, $client_id, 'completed']);
         $job_id = $pdo->lastInsertId();
-        asf_audit('scan.attack_surface', "target=$resolved ports=".count($ports)." job=$job_id");
+        asf_audit('scan.attack_surface', "target=$resolved ports=".count($ports)." job=$job_id client=$client_id");
 
         $fstmt = $pdo->prepare(
             'INSERT INTO findings (scan_job_id, title, description, severity, affected_url, remediation)
@@ -175,23 +214,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
                 ]);
             } catch (Throwable) {}
         }
+        // OASM HTTP security-header gaps → findings
+        $allowed_sev = ['critical','high','medium','low','info'];
+        foreach ($surface_findings as $f) {
+            $sev = in_array($f['severity'] ?? 'low', $allowed_sev, true) ? $f['severity'] : 'low';
+            try {
+                $fstmt->execute([
+                    $job_id,
+                    mb_substr($f['title'] ?? 'Surface finding', 0, 500),
+                    $f['description'] ?? '',
+                    $sev,
+                    mb_substr($f['affected_url'] ?? $resolved, 0, 1000),
+                    $f['remediation'] ?? '',
+                ]);
+            } catch (Throwable) {}
+        }
+        asf_notify(
+            asf_scan_recipients(isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null, $client_id),
+            'Attack surface report ready', $resolved,
+            'report.php?export=' . $job_id . '&format=html', 'success'
+        );
     } catch (Throwable $e) {
         echo json_encode(['error'=>null,'db_warning'=>$e->getMessage(),
             'target'=>$resolved,'ports'=>$ports,'counts'=>$counts,'analysis'=>$analysis,'job_id'=>null]); exit;
     }
 
     echo json_encode([
-        'target'   => $resolved,
-        'ports'    => $ports,
-        'counts'   => $counts,
-        'risky'    => $risky,
-        'analysis' => $analysis,
-        'raw'      => $stdout,
-        'job_id'   => $job_id,
-        'timestamp'=> gmdate('c'),
+        'target'     => $resolved,
+        'ports'      => $ports,
+        'counts'     => $counts,
+        'risky'      => $risky,
+        'analysis'   => $analysis,
+        'raw'        => $stdout,
+        'job_id'     => $job_id,
+        'subdomains' => $oasm['subdomains'] ?? [],
+        'dns'        => $oasm['dns'] ?? [],
+        'http'       => $oasm['http'] ?? [],
+        'timestamp'  => gmdate('c'),
     ]);
     exit;
 }
+
+$clients = asf_clients();
 ?>
 <?php require_once '../views/partials/header.php'; ?>
 
@@ -224,6 +288,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
                      style="border-radius:0 .5rem .5rem 0;">
             </div>
             <small class="text-muted">Public hosts &amp; IPs only. Maps open TCP ports &amp; service versions.</small>
+          </div>
+          <div class="form-group">
+            <label class="font-weight-bold" style="font-size:.82rem;color:#374151;"><i class="fas fa-building mr-1 text-muted"></i>Client</label>
+            <select class="form-control" id="clientId" name="client_id">
+              <option value="">Internal / no client</option>
+              <?php foreach ($clients as $c): ?>
+              <option value="<?= (int)$c['id'] ?>"><?= htmlspecialchars($c['full_name']) ?><?= $c['company'] ? ' — ' . htmlspecialchars($c['company']) : '' ?></option>
+              <?php endforeach; ?>
+            </select>
           </div>
           <button type="submit" class="btn btn-asf btn-block py-3 mt-1" id="btnMap">
             <i class="fas fa-satellite-dish mr-2"></i>Map Attack Surface
@@ -290,6 +363,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
         </div>
       </div>
 
+      <!-- OASM discovery (subdomains / DNS / HTTP) -->
+      <div id="discoveryCard" class="card mb-3 d-none">
+        <div class="card-header">
+          <span class="card-title"><i class="fas fa-sitemap mr-2" style="color:#0891b2;"></i>Discovery</span>
+        </div>
+        <div class="card-body" id="discoveryBody"></div>
+      </div>
+
       <!-- Raw -->
       <div class="card">
         <div class="card-body">
@@ -347,6 +428,7 @@ document.getElementById('oasmForm').addEventListener('submit', async function(e)
   document.getElementById('placeholder').classList.add('d-none');
 
   const fd = new FormData(); fd.append('target', target);
+  fd.append('client_id', document.getElementById('clientId').value);
   try {
     const resp = await fetch('oasm.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
     const data = await resp.json();
@@ -412,7 +494,38 @@ function render(d){
       </tr>`;
     }).join('');
   }
+  renderDiscovery(d);
   document.getElementById('resultWrap').classList.remove('d-none');
+}
+
+function oesc(s){ const e=document.createElement('div'); e.textContent=s==null?'':s; return e.innerHTML; }
+
+function renderDiscovery(d){
+  const card = document.getElementById('discoveryCard');
+  const body = document.getElementById('discoveryBody');
+  const subs = d.subdomains || [], dns = d.dns || {}, http = d.http || {};
+  const hasAny = subs.length || (dns && Object.values(dns).some(v=>v&&v.length)) || (http && http.server);
+  if (!hasAny){ card.classList.add('d-none'); return; }
+  let html = '';
+  if (subs.length){
+    html += '<div class="mb-3"><div style="font-weight:700;color:#1e293b;font-size:.84rem;" class="mb-1">'+
+      '<i class="fas fa-network-wired mr-1" style="color:#6366f1;"></i>Subdomains <span class="badge" style="background:#eef2ff;color:#6366f1;">'+subs.length+'</span></div>'+
+      '<div style="max-height:180px;overflow:auto;font-size:.78rem;line-height:1.7;">'+
+      subs.map(s=>'<code style="margin-right:.6rem;color:#334155;">'+oesc(s)+'</code>').join('')+'</div></div>';
+  }
+  const dnsRows = Object.entries(dns).filter(([,v])=>v&&v.length);
+  if (dnsRows.length){
+    html += '<div class="mb-3"><div style="font-weight:700;color:#1e293b;font-size:.84rem;" class="mb-1"><i class="fas fa-server mr-1" style="color:#0ea5e9;"></i>DNS records</div>'+
+      '<table class="table table-sm mb-0" style="font-size:.78rem;"><tbody>'+
+      dnsRows.map(([k,v])=>'<tr><th style="width:60px;">'+oesc(k)+'</th><td>'+v.map(oesc).join('<br>')+'</td></tr>').join('')+
+      '</tbody></table></div>';
+  }
+  if (http && http.server){
+    html += '<div><span style="font-weight:700;color:#1e293b;font-size:.84rem;"><i class="fas fa-globe mr-1" style="color:#16a34a;"></i>HTTP banner:</span> <code>'+oesc(http.server)+'</code>'+
+      (http.url?' <span class="text-muted" style="font-size:.74rem;">('+oesc(http.url)+')</span>':'')+'</div>';
+  }
+  body.innerHTML = html;
+  card.classList.remove('d-none');
 }
 </script>
 JS;
