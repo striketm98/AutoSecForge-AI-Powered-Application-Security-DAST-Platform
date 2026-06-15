@@ -1,5 +1,6 @@
 <?php
 require_once '../src/auth.php';
+require_once '../src/helpers.php';
 require_auth();
 $page_title = 'Scan History';
 
@@ -8,6 +9,9 @@ if (isset($_GET['detail']) && ctype_digit($_GET['detail'])) {
     header('Content-Type: application/json');
     try {
         $pdo  = Database::getInstance();
+        if (!asf_can_view_report($pdo, (int)$_GET['detail'])) {
+            http_response_code(403); echo json_encode(['error'=>'Access denied']); exit;
+        }
         $stmt = $pdo->prepare('SELECT * FROM scan_jobs WHERE id = ? LIMIT 1');
         $stmt->execute([(int)$_GET['detail']]);
         echo json_encode($stmt->fetch(PDO::FETCH_ASSOC) ?: ['error'=>'Not found']);
@@ -15,24 +19,18 @@ if (isset($_GET['detail']) && ctype_digit($_GET['detail'])) {
     exit;
 }
 
-// ── Fetch jobs ────────────────────────────────────────────────────
+// ── Fetch jobs (scoped by role: client→own client_id, analyst→own runs) ──
 $jobs = []; $db_error = null;
 try {
     $pdo = Database::getInstance();
-    if (($_SESSION['user_role'] ?? '') === 'analyst') {
-        $stmt = $pdo->prepare(
-            'SELECT j.*, u.full_name analyst FROM scan_jobs j
-               LEFT JOIN users u ON u.id=j.triggered_by
-              WHERE j.triggered_by=? ORDER BY j.created_at DESC LIMIT 200'
-        );
-        $stmt->execute([$_SESSION['user_id']]);
-    } else {
-        $stmt = $pdo->query(
-            'SELECT j.*, u.full_name analyst FROM scan_jobs j
-               LEFT JOIN users u ON u.id=j.triggered_by
-              ORDER BY j.created_at DESC LIMIT 500'
-        );
-    }
+    [$scopeSql, $scopeParams] = asf_report_scope();
+    $stmt = $pdo->prepare(
+        "SELECT j.*, u.full_name analyst, c.full_name client_name FROM scan_jobs j
+           LEFT JOIN users u ON u.id = j.triggered_by
+           LEFT JOIN users c ON c.id = j.client_id
+          WHERE $scopeSql ORDER BY j.created_at DESC LIMIT 500"
+    );
+    $stmt->execute($scopeParams);
     $jobs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) { $db_error = $e->getMessage(); }
 ?>

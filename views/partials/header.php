@@ -358,6 +358,7 @@
           <?php
           $cur = basename($_SERVER['SCRIPT_NAME']);
           $active = fn($p) => in_array($cur, (array)$p) ? ' active' : '';
+          $is_client = ($_SESSION['user_role'] ?? '') === 'client';
           ?>
 
           <li class="nav-header">Main</li>
@@ -369,6 +370,7 @@
             </a>
           </li>
 
+          <?php if (!$is_client): ?>
           <li class="nav-header">Scanning</li>
 
           <li class="nav-item">
@@ -403,14 +405,17 @@
             </a>
           </li>
 
+          <?php endif; /* !$is_client */ ?>
+
           <li class="nav-header">Reporting</li>
 
           <li class="nav-item">
             <a href="report.php" class="nav-link<?= $active('report.php') ?>">
               <i class="nav-icon fas fa-file-alt"></i>
-              <p>Reports</p>
+              <p><?= $is_client ? 'My Reports' : 'Reports' ?></p>
             </a>
           </li>
+          <?php if (!$is_client): ?>
           <li class="nav-item">
             <a href="deliverables.php" class="nav-link<?= $active('deliverables.php') ?>">
               <i class="nav-icon fas fa-box-open"></i>
@@ -423,6 +428,7 @@
               <p>Findings Review</p>
             </a>
           </li>
+          <?php endif; ?>
 
           <li class="nav-header">Collaboration</li>
           <li class="nav-item">

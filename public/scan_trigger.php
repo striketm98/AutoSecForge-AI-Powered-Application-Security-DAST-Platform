@@ -19,6 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     if ($image === '' || !preg_match('#^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}(:[A-Za-z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$#', $image)) {
         echo json_encode(['error' => 'Invalid image reference. Example: nginx:1.25']); exit;
     }
+    $client_id = asf_valid_client_id($_POST['client_id'] ?? null);
 
     $env     = @parse_ini_file('/var/www/html/.env', false, INI_SCANNER_RAW) ?: [];
     $mcp_url = rtrim($env['MCP_URL'] ?? 'http://mcp-router:6300', '/');
@@ -38,20 +39,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         try {
             $pdo = Database::getInstance();
             $stmt = $pdo->prepare(
-                'INSERT INTO scan_jobs (target, scan_types, raw_output, analysis, model, triggered_by, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO scan_jobs (target, scan_types, raw_output, analysis, model, triggered_by, client_id, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
             );
             $stmt->execute([
                 $image, 'container',
                 $result['raw_output'] ?? '', $result['analysis'] ?? '',
-                $result['model'] ?? '', $_SESSION['user_id'] ?? null,
+                $result['model'] ?? '', $_SESSION['user_id'] ?? null, $client_id,
                 ($result['ok'] ?? true) ? 'completed' : 'partial',
             ]);
             $job_id = $pdo->lastInsertId();
             $result['job_id'] = $job_id;
-            asf_audit('scan.container', "image=$image job=$job_id");
+            asf_audit('scan.container', "image=$image job=$job_id client=$client_id");
             asf_notify(
-                asf_scan_recipients(isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null),
+                asf_scan_recipients(isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null, $client_id),
                 'Container scan report ready', "$image",
                 'report.php?export=' . $job_id . '&format=html',
                 ($result['ok'] ?? true) ? 'success' : 'warning'
@@ -83,6 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
 
     $target     = trim($_POST['target'] ?? '');
     $scan_types = array_values(array_filter((array)($_POST['scan_types'] ?? ['network'])));
+    $client_id  = asf_valid_client_id($_POST['client_id'] ?? null);
 
     if (!$target) { echo json_encode(['error'=>'Target is required.']); exit; }
 
@@ -142,8 +144,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
         try {
             $pdo = Database::getInstance();
             $stmt = $pdo->prepare(
-                'INSERT INTO scan_jobs (target, scan_types, raw_output, analysis, model, triggered_by, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO scan_jobs (target, scan_types, raw_output, analysis, model, triggered_by, client_id, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
             );
             $stmt->execute([
                 $target,
@@ -152,13 +154,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
                 $result['analysis']   ?? '',
                 $result['model']      ?? '',
                 $_SESSION['user_id']  ?? null,
+                $client_id,
                 $result['ok'] ? 'completed' : 'partial',
             ]);
             $job_id = $pdo->lastInsertId();
             $result['job_id'] = $job_id;
-            asf_audit('scan.security_review', 'target=' . $target . ' types=' . implode(',', $scan_types) . " job=$job_id");
+            asf_audit('scan.security_review', 'target=' . $target . ' types=' . implode(',', $scan_types) . " job=$job_id client=$client_id");
             asf_notify(
-                asf_scan_recipients(isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null),
+                asf_scan_recipients(isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null, $client_id),
                 'Scan report ready',
                 $target . ' — ' . implode(', ', $scan_types),
                 'report.php?export=' . $job_id . '&format=html',
@@ -203,6 +206,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
     echo json_encode($result);
     exit;
 }
+
+$clients = asf_clients();
 ?>
 <?php require_once '../views/partials/header.php'; ?>
 
@@ -240,6 +245,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_SERVER['HTTP_X_REQUESTED_W
                      style="border-radius:0 .5rem .5rem 0;">
             </div>
             <small class="text-muted">Public hosts &amp; IPs only. Private ranges are blocked.</small>
+          </div>
+
+          <div class="form-group">
+            <label class="font-weight-bold" style="font-size:.82rem;color:#374151;">
+              <i class="fas fa-building mr-1 text-muted"></i>Client
+            </label>
+            <select class="form-control" id="clientId" name="client_id">
+              <option value="">Internal / no client</option>
+              <?php foreach ($clients as $c): ?>
+              <option value="<?= (int)$c['id'] ?>">
+                <?= htmlspecialchars($c['full_name']) ?><?= $c['company'] ? ' — ' . htmlspecialchars($c['company']) : '' ?>
+              </option>
+              <?php endforeach; ?>
+            </select>
+            <small class="text-muted">Scopes this report to a client. <a href="clients.php">Manage clients</a>.</small>
           </div>
 
           <div class="form-group">
@@ -571,6 +591,7 @@ document.getElementById('scanForm').addEventListener('submit', async function(e)
 
   const fd = new FormData();
   fd.append('target', target);
+  fd.append('client_id', document.getElementById('clientId').value);
   types.forEach(t => fd.append('scan_types[]', t));
 
   // Include authenticated-ZAP credentials when ZAP is selected
@@ -636,6 +657,7 @@ document.getElementById('trivyForm').addEventListener('submit', async function(e
   const fd = new FormData();
   fd.append('mode', 'container');
   fd.append('image', image);
+  fd.append('client_id', document.getElementById('clientId').value);
 
   try {
     const resp = await fetch('scan_trigger.php', {

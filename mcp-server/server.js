@@ -102,14 +102,52 @@ async function zapGet(path, params = {}) {
 }
 
 /**
+ * Wait until the ZAP daemon answers (it takes 30–60s to boot). Without this a
+ * scan fired against a cold ZAP fails with ECONNREFUSED and returns no alerts.
+ */
+async function zapReady(maxWaitMs = 90_000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+        try {
+            const v = await zapGet('/JSON/core/view/version/');
+            if (v && v.version) return true;
+        } catch (_e) { /* not up yet */ }
+        await sleep(3000);
+    }
+    return false;
+}
+
+/**
+ * Collect alerts for a base URL, falling back to an unfiltered fetch when the
+ * strict baseurl filter yields nothing (a common cause of "ZAP found nothing").
+ */
+async function zapAlerts(url) {
+    let data = await zapGet('/JSON/alert/view/alerts/', { baseurl: url, start: 0, count: 200 });
+    let alerts = data.alerts || [];
+    if (!alerts.length) {
+        data = await zapGet('/JSON/alert/view/alerts/', { start: 0, count: 200 });
+        alerts = data.alerts || [];
+    }
+    return alerts;
+}
+
+/**
  * Run a bounded ZAP spider + active scan and collect alerts.
  * Polling is time-capped so the orchestrated review never hangs the request.
  */
 async function runZap(url) {
     try {
+        // 0) Wait for the daemon (cold ZAP takes 30–60s to accept API calls).
+        if (!await zapReady()) {
+            return { success: false, error: 'ZAP daemon did not become ready in time.' };
+        }
+
         // 1) Spider (cap ~60s)
         const spider = await zapGet('/JSON/spider/action/scan/', { url, maxChildren: 10 });
         const spiderId = spider.scan;
+        if (spiderId === undefined) {
+            return { success: false, error: `ZAP rejected the spider request: ${JSON.stringify(spider).slice(0, 200)}` };
+        }
         for (let i = 0; i < 30; i++) {
             const s = await zapGet('/JSON/spider/view/status/', { scanId: spiderId });
             if (parseInt(s.status) >= 100) break;
@@ -117,20 +155,20 @@ async function runZap(url) {
         }
 
         // 2) Active scan (cap ~90s) — best effort, alerts collected regardless
-        let ascanId = null;
         try {
             const ascan = await zapGet('/JSON/ascan/action/scan/', { url, recurse: true, inScopeOnly: false });
-            ascanId = ascan.scan;
-            for (let i = 0; i < 45; i++) {
-                const s = await zapGet('/JSON/ascan/view/status/', { scanId: ascanId });
-                if (parseInt(s.status) >= 100) break;
-                await sleep(2000);
+            const ascanId = ascan.scan;
+            if (ascanId !== undefined) {
+                for (let i = 0; i < 45; i++) {
+                    const s = await zapGet('/JSON/ascan/view/status/', { scanId: ascanId });
+                    if (parseInt(s.status) >= 100) break;
+                    await sleep(2000);
+                }
             }
         } catch (_e) { /* active scan may be disabled — keep passive alerts */ }
 
-        // 3) Collect alerts
-        const data   = await zapGet('/JSON/alert/view/alerts/', { baseurl: url, start: 0, count: 200 });
-        const alerts = data.alerts || [];
+        // 3) Collect alerts (with unfiltered fallback)
+        const alerts = await zapAlerts(url);
 
         if (!alerts.length) {
             return { success: true, stdout: `ZAP scan complete for ${url}. No alerts reported.` };
@@ -154,6 +192,9 @@ async function runZap(url) {
  */
 async function runZapAuth(url, auth) {
     try {
+        if (!await zapReady()) {
+            return { success: false, error: 'ZAP daemon did not become ready in time.' };
+        }
         const ctxName = 'asf_' + Date.now();
 
         // 1) Context + scope
@@ -197,6 +238,9 @@ async function runZapAuth(url, auth) {
         const spider   = await zapGet('/JSON/spider/action/scanAsUser/', {
             contextId, userId, url, maxChildren: 10, recurse: true });
         const spiderId = spider.scanAsUser ?? spider.scan;
+        if (spiderId === undefined) {
+            return { success: false, error: `ZAP rejected the authenticated spider: ${JSON.stringify(spider).slice(0, 200)}` };
+        }
         for (let i = 0; i < 30; i++) {
             const s = await zapGet('/JSON/spider/view/status/', { scanId: spiderId });
             if (parseInt(s.status) >= 100) break;
@@ -215,9 +259,8 @@ async function runZapAuth(url, auth) {
             }
         } catch (_e) { /* keep whatever alerts we have */ }
 
-        // 6) Collect alerts
-        const data   = await zapGet('/JSON/alert/view/alerts/', { baseurl: url, start: 0, count: 200 });
-        const alerts = data.alerts || [];
+        // 6) Collect alerts (with unfiltered fallback)
+        const alerts = await zapAlerts(url);
         const head   = `=== ZAP AUTHENTICATED ALERTS (${alerts.length}) for ${url} (user=${auth.username}) ===`;
         if (!alerts.length) return { success: true, stdout: `${head}\nNo alerts reported.` };
         const lines = alerts.slice(0, 200).map(a =>

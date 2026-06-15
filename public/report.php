@@ -11,6 +11,7 @@ if (isset($_GET['export']) && ctype_digit($_GET['export'])) {
     if (!in_array($format, ['pdf','doc','html','txt'], true)) $format = 'pdf';
     try {
         $pdo = Database::getInstance();
+        if (!asf_can_view_report($pdo, $id)) { http_response_code(403); exit('Access denied.'); }
         $job = asf_get_report_data($pdo, $id);
         if (!$job) { http_response_code(404); exit('Report not found.'); }
 
@@ -95,23 +96,47 @@ if (isset($_GET['export']) && ctype_digit($_GET['export'])) {
     }
 }
 
-$jobs = []; $db_error = null;
+$jobs = []; $db_error = null; $clients = []; $is_staff_lead = false;
 try {
     $pdo  = Database::getInstance();
-    $jobs = $pdo->query(
-        "SELECT j.*, u.full_name analyst FROM scan_jobs j
-           LEFT JOIN users u ON u.id=j.triggered_by
-          WHERE j.status IN ('completed','partial')
+    $is_staff_lead = in_array($_SESSION['user_role'] ?? '', ['admin','manager','auditor','executive'], true);
+    // Staff leads may filter by client; client/analyst are auto-scoped to their own.
+    $clientFilter = $is_staff_lead ? asf_valid_client_id($_GET['client'] ?? null) : null;
+    if ($is_staff_lead) $clients = asf_clients($pdo);
+    [$scopeSql, $scopeParams] = asf_report_scope($clientFilter);
+
+    $stmt = $pdo->prepare(
+        "SELECT j.*, u.full_name analyst, c.full_name client_name
+           FROM scan_jobs j
+           LEFT JOIN users u ON u.id = j.triggered_by
+           LEFT JOIN users c ON c.id = j.client_id
+          WHERE j.status IN ('completed','partial') AND $scopeSql
           ORDER BY j.created_at DESC LIMIT 200"
-    )->fetchAll(PDO::FETCH_ASSOC);
+    );
+    $stmt->execute($scopeParams);
+    $jobs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) { $db_error = $e->getMessage(); }
 ?>
 <?php require_once '../views/partials/header.php'; ?>
 
-<div id="pageActions">
+<div id="pageActions" class="d-flex align-items-center" style="gap:.5rem;">
+  <?php if ($is_staff_lead && $clients): ?>
+  <form method="get" class="d-flex align-items-center" style="gap:.35rem;">
+    <select name="client" class="form-control form-control-sm" style="width:auto;" onchange="this.form.submit()">
+      <option value="">All clients</option>
+      <?php $cf = (int)($_GET['client'] ?? 0); foreach ($clients as $c): ?>
+      <option value="<?= (int)$c['id'] ?>" <?= $cf === (int)$c['id'] ? 'selected' : '' ?>>
+        <?= htmlspecialchars($c['full_name']) ?><?= $c['company'] ? ' — ' . htmlspecialchars($c['company']) : '' ?>
+      </option>
+      <?php endforeach; ?>
+    </select>
+  </form>
+  <?php endif; ?>
+  <?php if (($_SESSION['user_role'] ?? '') !== 'client'): ?>
   <a href="scan_trigger.php" class="btn btn-asf btn-sm px-3">
     <i class="fas fa-plus mr-1"></i>New Scan
   </a>
+  <?php endif; ?>
 </div>
 
 <?php if ($db_error): ?>
@@ -142,6 +167,9 @@ try {
               <code style="font-size:.8rem;color:#1e293b;font-weight:600;"><?= htmlspecialchars($job['target']) ?></code>
               <span class="badge ml-2 flex-shrink-0" style="background:<?=$sbg?>;color:<?=$scolor?>;font-size:.68rem;"><?= ucfirst($job['status']) ?></span>
             </div>
+            <?php if (!empty($job['client_name'])): ?>
+            <div class="mb-1"><span class="badge" style="background:#f0fdf4;color:#16a34a;font-size:.62rem;"><i class="fas fa-building mr-1"></i><?= htmlspecialchars($job['client_name']) ?></span></div>
+            <?php endif; ?>
             <div class="mb-2">
               <?php foreach (explode(',', $job['scan_types']??'') as $t): ?>
                 <span class="badge badge-secondary mr-1" style="font-size:.62rem;"><?= htmlspecialchars(trim($t)) ?></span>
