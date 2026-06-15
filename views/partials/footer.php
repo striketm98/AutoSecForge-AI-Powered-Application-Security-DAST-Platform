@@ -67,7 +67,8 @@ document.querySelectorAll('.sidebar-menu .nav-link').forEach(link => {
                 danger:'times-circle', info:'info-circle' };
   var COLORS= { success:'#16a34a', warning:'#d97706', danger:'#dc2626', info:'#2563eb' };
 
-  function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+  var ENT={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+  function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,function(c){return ENT[c];}); }
   function timeAgo(ts){
     var d = new Date((ts||'').replace(' ','T')+'Z'), s=(Date.now()-d.getTime())/1000;
     if (isNaN(s)) return '';

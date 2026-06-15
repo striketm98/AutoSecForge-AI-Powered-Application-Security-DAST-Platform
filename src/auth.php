@@ -3,6 +3,9 @@ if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.cookie_httponly', 1);
     ini_set('session.cookie_samesite', 'Strict');
     ini_set('session.use_strict_mode', 1);
+    // App is served over HTTPS only (port 80 redirects to 443) — never let the
+    // session cookie travel over plaintext HTTP.
+    ini_set('session.cookie_secure', 1);
     session_start();
 }
 require_once 'Database.php';

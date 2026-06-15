@@ -35,9 +35,13 @@ try {
                 ->execute([$uid, mb_substr($title, 0, 200), $body, $cat]);
             $id = (int)$pdo->lastInsertId();
             asf_audit('idea.create', "id=$id cat=$cat");
-            // Notify admins/managers that there's new feedback to review.
-            asf_notify(
+            // Notify admins/managers (other than the author) that there's new feedback to review.
+            $recips = array_filter(
                 $pdo->query("SELECT id FROM users WHERE role IN ('admin','manager')")->fetchAll(PDO::FETCH_COLUMN),
+                fn($rid) => (int)$rid !== $uid
+            );
+            asf_notify(
+                $recips,
                 'New ' . $cat . ' submitted', mb_substr($title, 0, 120),
                 'ideas.php?id=' . $id, 'info'
             );
