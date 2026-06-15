@@ -173,9 +173,35 @@ services:
   zap:
     image: zaproxy/zap-stable:latest
     container_name: autosecforge-zap
-    command: zap.sh -daemon -host 0.0.0.0 -port 8090 -config api.key=${ZAP_API_KEY:-ZapKeyChangeMe}
+    # api.addrs.* = allow API calls from any container on asf-net (ZAP otherwise
+    # rejects non-localhost callers, so the mcp-router can't drive it).
+    command:
+      - zap.sh
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8090"
+      - -config
+      - api.key=${ZAP_API_KEY:-ZapKeyChangeMe}
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
+    environment:
+      # Cap the JVM heap so ZAP starts reliably on a memory-constrained host
+      # (default is 1/4 of RAM, which gets OOM-killed alongside the other Java
+      # services). Raise this if you have spare RAM.
+      _JAVA_OPTIONS: "-Xmx1024m"
+    mem_limit: 1536m
     expose:
       - "8090"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8090/JSON/core/view/version/?apikey=${ZAP_API_KEY:-ZapKeyChangeMe}"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
     networks:
       - asf-net
     restart: unless-stopped
