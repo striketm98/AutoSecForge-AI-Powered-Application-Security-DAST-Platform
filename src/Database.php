@@ -15,8 +15,13 @@ class Database {
                 throw new Exception("Failed to parse .env");
             }
             $dsn = "mysql:host={$env['DB_HOST']};dbname={$env['DB_NAME']};charset=utf8mb4";
-            self::$instance = new PDO($dsn, $env['DB_USER'], $env['DB_PASSWORD']);
-            self::$instance->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            self::$instance = new PDO($dsn, $env['DB_USER'], $env['DB_PASSWORD'], [
+                PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
+                // Use real server-side prepared statements (not emulated string
+                // substitution) so bound parameters can never be reinterpreted
+                // as SQL — defence in depth alongside utf8mb4.
+                PDO::ATTR_EMULATE_PREPARES => false,
+            ]);
         }
         return self::$instance;
     }

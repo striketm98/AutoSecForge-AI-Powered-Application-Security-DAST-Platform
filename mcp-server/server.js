@@ -41,11 +41,20 @@ function validateTarget(target) {
 }
 
 // ── Run command inside named container ───────────────────────────
-async function runInContainer(containerName, cmd) {
+// SECURITY: `argv` MUST be an array (execve-style, no shell). Passing user
+// input as separate argv elements means shell metacharacters ($(), ``, ;, |,
+// &, spaces) are treated as literal argument text — never interpreted — so a
+// crafted scan target/URL cannot inject commands. Do NOT change this to
+// `['sh','-c', ...]` with interpolated input. For the rare case that genuinely
+// needs a shell (fully-validated, non-user input), use runInContainerShell().
+async function runInContainer(containerName, argv) {
+    if (!Array.isArray(argv)) {
+        return { success: false, error: 'runInContainer: argv must be an array' };
+    }
     try {
         const c = docker.getContainer(containerName);
         const exec = await c.exec({
-            Cmd: ['sh', '-c', cmd],
+            Cmd: argv,
             AttachStdout: true,
             AttachStderr: true,
         });
@@ -60,6 +69,13 @@ async function runInContainer(containerName, cmd) {
     } catch (e) {
         return { success: false, error: e.message };
     }
+}
+
+// Shell variant — ONLY for commands with no user-controlled shell
+// metacharacters (e.g. the SAST flow, whose inputs are SAFE_ID-validated and
+// env-sourced). Never pass raw scan targets/URLs through this.
+async function runInContainerShell(containerName, cmd) {
+    return runInContainer(containerName, ['sh', '-c', cmd]);
 }
 
 // ── Call AI agent for triage ─────────────────────────────────────
@@ -219,8 +235,11 @@ const IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\/-]{0,200}(:[a-zA-Z0-9._-]{1,128})?(@
 
 async function runTrivy(image) {
     // Standalone scan inside the trivy container; --quiet keeps stdout clean.
-    const cmd = `trivy image --scanners vuln --quiet --no-progress --severity CRITICAL,HIGH,MEDIUM ${image}`;
-    return runInContainer('autosecforge-trivy', cmd);
+    // argv form — `image` is passed as a literal argument (no shell).
+    return runInContainer('autosecforge-trivy', [
+        'trivy', 'image', '--scanners', 'vuln', '--quiet', '--no-progress',
+        '--severity', 'CRITICAL,HIGH,MEDIUM', image,
+    ]);
 }
 
 // ── Health ────────────────────────────────────────────────────────
@@ -233,9 +252,9 @@ app.post('/scan/network', scanLimiter, async (req, res) => {
         return res.status(400).json({ error: 'Invalid or private target.' });
     }
     const SAFE_FLAGS = ['-sV', '-T4', '-p-', '--open', '-sU', '-A'];
-    const safeFlags  = (flags || []).filter(f => SAFE_FLAGS.includes(f)).join(' ');
-    const cmd = `nmap -oX - ${safeFlags} ${target}`;
-    const result = await runInContainer('autosecforge-nmap', cmd);
+    const safeFlags  = (flags || []).filter(f => SAFE_FLAGS.includes(f));
+    const result = await runInContainer('autosecforge-nmap',
+        ['nmap', '-oX', '-', ...safeFlags, target]);
     res.json(result);
 });
 
@@ -249,7 +268,8 @@ app.post('/scan/dast', scanLimiter, async (req, res) => {
     if (PRIVATE_IP.test(stripped)) {
         return res.status(400).json({ error: 'Internal URLs are not permitted.' });
     }
-    const result = await runInContainer('autosecforge-nikto', `nikto -h ${url} -Format json`);
+    const result = await runInContainer('autosecforge-nikto',
+        ['nikto', '-h', url, '-Format', 'json']);
     res.json(result);
 });
 
@@ -264,8 +284,9 @@ app.post('/scan/sqli', scanLimiter, async (req, res) => {
         return res.status(400).json({ error: 'Internal URLs are not permitted.' });
     }
     const safeLevel = Math.min(Math.max(parseInt(level) || 1, 1), 5);
-    const cmd = `sqlmap -u "${url}" --level=${safeLevel} --batch --output-dir=/tmp/sqlmap --format=json`;
-    const result = await runInContainer('autosecforge-sqlmap', cmd);
+    const result = await runInContainer('autosecforge-sqlmap',
+        ['sqlmap', '-u', url, `--level=${safeLevel}`, '--batch',
+         '--output-dir=/tmp/sqlmap', '--format=json']);
     res.json(result);
 });
 
@@ -313,21 +334,23 @@ app.post('/scan/security-review', scanLimiter, async (req, res) => {
         let result;
         switch (type) {
             case 'network': {
-                const cmd = `nmap -sV -T4 --open ${target}`;
-                result = await runInContainer('autosecforge-nmap', cmd);
+                result = await runInContainer('autosecforge-nmap',
+                    ['nmap', '-sV', '-T4', '--open', target]);
                 rawParts.push(`=== NMAP (network) ===\n${result.stdout || result.error}`);
                 break;
             }
             case 'dast': {
                 const url = target.startsWith('http') ? target : `http://${target}`;
-                result = await runInContainer('autosecforge-nikto', `nikto -h ${url} -Format json`);
+                result = await runInContainer('autosecforge-nikto',
+                    ['nikto', '-h', url, '-Format', 'json']);
                 rawParts.push(`=== NIKTO (dast) ===\n${result.stdout || result.error}`);
                 break;
             }
             case 'sqli': {
                 const url = target.startsWith('http') ? target : `http://${target}`;
-                const cmd = `sqlmap -u "${url}" --level=1 --batch --output-dir=/tmp/sqlmap --format=json`;
-                result = await runInContainer('autosecforge-sqlmap', cmd);
+                result = await runInContainer('autosecforge-sqlmap',
+                    ['sqlmap', '-u', url, '--level=1', '--batch',
+                     '--output-dir=/tmp/sqlmap', '--format=json']);
                 rawParts.push(`=== SQLMAP (sqli) ===\n${result.stdout || result.error}`);
                 break;
             }
@@ -407,7 +430,9 @@ app.post('/scan/sast', scanLimiter, async (req, res) => {
         ` -Dsonar.token=${SONAR_TOKEN}` +
         ` -Dsonar.scm.disabled=true` +
         ` -Dsonar.projectBaseDir=${srcPath}`;
-    const scan = await runInContainer('autosecforge-sonar-scanner', scanCmd);
+    // Shell is needed for `cd && sonar-scanner`; safe because project/base_dir
+    // are SAFE_ID-validated and host/token come from trusted env, not the user.
+    const scan = await runInContainerShell('autosecforge-sonar-scanner', scanCmd);
     if (!scan.success) {
         return res.json({ error: `sonar-scanner failed: ${scan.error}` });
     }
